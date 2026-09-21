@@ -2,6 +2,7 @@ package claude
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 )
 
@@ -65,8 +66,22 @@ func TestLargeIntegersSurvive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, _ := Marshal(e)
-	if string(b) != string(line) {
-		t.Fatalf("mangled: %s", b)
+	b, err := Marshal(e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// json.Marshal emits map keys in sorted order, so the bytes are NOT
+	// identical to the input and must not be compared. What has to survive is
+	// the integer's exact digits: without UseNumber it becomes a float64 and
+	// loses precision.
+	back, err := parseLine(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := fmt.Sprint(back.Raw["big"]); got != "1790002501047123456" {
+		t.Fatalf("integer corrupted: %s", got)
+	}
+	if _, ok := back.Raw["big"].(json.Number); !ok {
+		t.Fatalf("want json.Number, got %T — UseNumber is not in effect", back.Raw["big"])
 	}
 }
