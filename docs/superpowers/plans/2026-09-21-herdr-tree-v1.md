@@ -2489,6 +2489,53 @@ func TestAmbiguityResolvedByHerdrHint(t *testing.T) {
 	}
 }
 
+func TestCurrentRefusesAPaneWithNoCWD(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CLAUDE_SESSIONS_DIR", dir)
+	// Exactly one session running anywhere: the tempting case to "just pick it".
+	writeReg(t, dir, "1", "some-sid", "/somewhere/else", "interactive")
+
+	if _, err := Current(adapter.Pane{CWD: ""}); err != ErrUnknownCWD {
+		t.Fatalf("got %v want ErrUnknownCWD — an unknown pane directory must not match every session", err)
+	}
+}
+
+func TestCurrentMatchesThroughASymlink(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CLAUDE_SESSIONS_DIR", dir)
+
+	real := t.TempDir()
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	// Claude recorded the real path; Herdr reports the pane through the link.
+	writeReg(t, dir, "1", "the-sid", real, "interactive")
+
+	got, err := Current(adapter.Pane{CWD: link})
+	if err != nil {
+		t.Fatalf("symlinked pane cwd should still match: %v", err)
+	}
+	if got != "the-sid" {
+		t.Fatalf("got %q want the-sid", got)
+	}
+}
+
+func TestCurrentToleratesATrailingSlash(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CLAUDE_SESSIONS_DIR", dir)
+	repoDir := t.TempDir()
+	writeReg(t, dir, "1", "the-sid", repoDir, "interactive")
+
+	got, err := Current(adapter.Pane{CWD: repoDir + "/"})
+	if err != nil {
+		t.Fatalf("trailing slash should not break the match: %v", err)
+	}
+	if got != "the-sid" {
+		t.Fatalf("got %q want the-sid", got)
+	}
+}
+
 func TestAmbiguityWithoutUsableHintIsAnError(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("CLAUDE_SESSIONS_DIR", dir)
@@ -2525,6 +2572,7 @@ import (
 var (
 	ErrNoSession        = errors.New("no interactive Claude session for this pane")
 	ErrAmbiguousSession = errors.New("several interactive Claude sessions match this pane")
+	ErrUnknownCWD       = errors.New("pane reported no working directory")
 )
 
 // SessionsDir is Claude Code's live process registry.
@@ -2545,10 +2593,31 @@ type regEntry struct {
 	Kind      string `json:"kind"`
 }
 
+// samePath compares two directories by identity rather than by spelling.
+// Herdr and Claude Code can report the same directory differently — one
+// through a symlink, one with a trailing slash — and a plain string compare
+// would drop a real match to zero and report no session at all.
+func samePath(a, b string) bool { return normPath(a) == normPath(b) }
+
+func normPath(p string) string {
+	p = filepath.Clean(p)
+	if r, err := filepath.EvalSymlinks(p); err == nil {
+		return r
+	}
+	return p // may not exist any more; the cleaned spelling is the best we have
+}
+
 // Current resolves the pane's Claude session. The registry is authoritative;
 // Herdr's agent_session value is only a tie-breaker, because it records the
 // last session id seen in the pane including headless ones.
 func Current(p adapter.Pane) (string, error) {
+	if p.CWD == "" {
+		// Without a pane directory there is nothing to match against, and
+		// matching everything would silently return whichever session happens
+		// to be the only one running. Missing evidence is not evidence that
+		// any session will do.
+		return "", ErrUnknownCWD
+	}
 	paths, err := filepath.Glob(filepath.Join(SessionsDir(), "*.json"))
 	if err != nil {
 		return "", err
@@ -2566,7 +2635,7 @@ func Current(p adapter.Pane) (string, error) {
 		if e.Kind != "interactive" || e.SessionID == "" {
 			continue
 		}
-		if p.CWD != "" && e.CWD != p.CWD {
+		if !samePath(e.CWD, p.CWD) {
 			continue
 		}
 		matches = append(matches, e.SessionID)
