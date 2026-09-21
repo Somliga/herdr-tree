@@ -738,13 +738,15 @@ import (
 )
 
 // writeSession copies the fixture into a fake projects tree, rewriting cwd.
-func writeSession(t *testing.T, projects, slug, id, cwd string) {
+// The slug is derived with SlugFor so the file lands exactly where
+// TranscriptPath will later look for it.
+func writeSession(t *testing.T, projects, id, cwd string) {
 	t.Helper()
 	es, err := ParseFile("testdata/simple.jsonl")
 	if err != nil {
 		t.Fatal(err)
 	}
-	dir := filepath.Join(projects, slug)
+	dir := filepath.Join(projects, SlugFor(cwd))
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -776,8 +778,8 @@ func TestDiscoverGroupsByRepoRoot(t *testing.T) {
 	repoDir := t.TempDir()
 	other := t.TempDir()
 
-	writeSession(t, projects, "slug-a", "11111111-1111-4111-8111-111111111111", repoDir)
-	writeSession(t, projects, "slug-b", "22222222-2222-4222-8222-222222222222", other)
+	writeSession(t, projects, "11111111-1111-4111-8111-111111111111", repoDir)
+	writeSession(t, projects, "22222222-2222-4222-8222-222222222222", other)
 
 	got, err := Discover(repoDir)
 	if err != nil {
@@ -806,9 +808,9 @@ func TestDiscoverMarksUnreadableSessionBroken(t *testing.T) {
 	t.Setenv("CLAUDE_PROJECTS_DIR", projects)
 	repoDir := t.TempDir()
 
-	writeSession(t, projects, "slug-a", "11111111-1111-4111-8111-111111111111", repoDir)
+	writeSession(t, projects, "11111111-1111-4111-8111-111111111111", repoDir)
 	// a file with no parseable entry at all
-	bad := filepath.Join(projects, "slug-a", "33333333-3333-4333-8333-333333333333.jsonl")
+	bad := filepath.Join(projects, SlugFor(repoDir), "33333333-3333-4333-8333-333333333333.jsonl")
 	if err := os.WriteFile(bad, []byte("not json\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -1241,7 +1243,9 @@ Expected: FAIL — `undefined: Graft`.
 
 - [ ] **Step 3: Implement the write**
 
-Append to `internal/claude/graft.go`:
+In `internal/claude/graft.go`, REPLACE the existing single-line
+`import "errors"` with this block — do not add a second import declaration,
+which would import `errors` twice and fail to compile:
 
 ```go
 import (
@@ -1252,6 +1256,11 @@ import (
 	"path/filepath"
 	"strings"
 )
+```
+
+Then append the rest to the same file:
+
+```go
 
 // ErrUnsupportedVersion means the transcript was written by a Claude Code
 // whose format this adapter has not been verified against. Refusing is
@@ -2375,7 +2384,7 @@ func TestAdapterBranchWritesNewSession(t *testing.T) {
 	t.Setenv("CLAUDE_PROJECTS_DIR", projects)
 	repoDir := t.TempDir()
 
-	writeSession(t, projects, "slug-a", "11111111-1111-4111-8111-111111111111", repoDir)
+	writeSession(t, projects, "11111111-1111-4111-8111-111111111111", repoDir)
 
 	sessions, err := New().Discover(repoDir)
 	if err != nil {
@@ -2400,7 +2409,7 @@ func TestAdapterPreviewCountsWhatIsCarried(t *testing.T) {
 	projects := t.TempDir()
 	t.Setenv("CLAUDE_PROJECTS_DIR", projects)
 	repoDir := t.TempDir()
-	writeSession(t, projects, "slug-a", "11111111-1111-4111-8111-111111111111", repoDir)
+	writeSession(t, projects, "11111111-1111-4111-8111-111111111111", repoDir)
 
 	sessions, _ := New().Discover(repoDir)
 	src := sessions[0]
@@ -2423,7 +2432,7 @@ func TestAdapterBranchRejectsUnknownNode(t *testing.T) {
 	projects := t.TempDir()
 	t.Setenv("CLAUDE_PROJECTS_DIR", projects)
 	repoDir := t.TempDir()
-	writeSession(t, projects, "slug-a", "11111111-1111-4111-8111-111111111111", repoDir)
+	writeSession(t, projects, "11111111-1111-4111-8111-111111111111", repoDir)
 
 	sessions, _ := New().Discover(repoDir)
 	if _, err := New().Branch(sessions[0], "no-such-node", repoDir); err == nil {
