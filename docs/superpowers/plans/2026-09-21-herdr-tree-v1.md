@@ -2697,7 +2697,11 @@ Create `internal/herdr/herdr_test.go`:
 ```go
 package herdr
 
-import "testing"
+import (
+	"errors"
+	"strings"
+	"testing"
+)
 
 const paneCurrentJSON = `{"id":"cli:pane:current","result":{"pane":{
 "agent":"claude",
@@ -2751,6 +2755,67 @@ func TestParseSplitMissingPane(t *testing.T) {
 		t.Fatal("want an error when no pane id is returned")
 	}
 }
+
+func TestArgvOrderingAndSeparator(t *testing.T) {
+	// herdr does NOT accept --flag=value (verified against the real binary:
+	// it answers "unknown option"), so ordering and the -- separator are the
+	// only things standing between data and the flag parser.
+	got := strings.Join(splitArgv("/repo"), " ")
+	want := "pane split --current --direction right --cwd /repo --no-focus"
+	if got != want {
+		t.Fatalf("splitArgv:\n got %q\nwant %q", got, want)
+	}
+
+	got = strings.Join(agentStartArgv("tree-abc", "wA:p2", "sid-1"), " ")
+	want = "agent start tree-abc --kind claude --pane wA:p2 -- --resume sid-1"
+	if got != want {
+		t.Fatalf("agentStartArgv:\n got %q\nwant %q", got, want)
+	}
+	// Everything after "--" belongs to claude, not herdr.
+	a := agentStartArgv("tree-abc", "wA:p2", "sid-1")
+	sep := -1
+	for i, v := range a {
+		if v == "--" {
+			sep = i
+		}
+	}
+	if sep == -1 {
+		t.Fatal("no -- separator: claude's flags would be parsed by herdr")
+	}
+	if a[sep+1] != "--resume" || a[sep+2] != "sid-1" {
+		t.Fatalf("resume args are not behind the separator: %v", a)
+	}
+
+	got = strings.Join(openTreePaneArgv("/repo"), " ")
+	want = "plugin pane open --plugin herdr-tree --entrypoint tree --placement overlay --cwd /repo"
+	if got != want {
+		t.Fatalf("openTreePaneArgv:\n got %q\nwant %q", got, want)
+	}
+}
+
+func TestRefusesArgumentsThatWouldBeReadAsFlags(t *testing.T) {
+	// A directory literally named "-foo" cannot be passed safely, because the
+	// --flag=value escape hatch does not exist in this CLI. Refusing beats
+	// letting herdr parse it as a flag.
+	if _, err := Split("-rf"); !errors.Is(err, ErrUnsafeArgument) {
+		t.Fatalf("Split: got %v want ErrUnsafeArgument", err)
+	}
+	if err := OpenTreePane("--placement"); !errors.Is(err, ErrUnsafeArgument) {
+		t.Fatalf("OpenTreePane: got %v want ErrUnsafeArgument", err)
+	}
+	if err := AgentStart("-x", "wA:p1", "sid"); !errors.Is(err, ErrUnsafeArgument) {
+		t.Fatalf("AgentStart name: got %v want ErrUnsafeArgument", err)
+	}
+	if err := AgentStart("tree-a", "-p", "sid"); !errors.Is(err, ErrUnsafeArgument) {
+		t.Fatalf("AgentStart pane: got %v want ErrUnsafeArgument", err)
+	}
+	if err := AgentStart("tree-a", "wA:p1", "-resume"); !errors.Is(err, ErrUnsafeArgument) {
+		t.Fatalf("AgentStart session: got %v want ErrUnsafeArgument", err)
+	}
+	if err := AgentStart("tree-a", "wA:p1", ""); !errors.Is(err, ErrUnsafeArgument) {
+		t.Fatalf("AgentStart empty: got %v want ErrUnsafeArgument", err)
+	}
+}
 ```
 
 - [ ] **Step 2: Run the test to verify it fails**
@@ -2768,14 +2833,38 @@ Create `internal/herdr/herdr.go`:
 package herdr
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
+	"time"
 
 	"herdr-tree/internal/adapter"
 )
+
+// timeout bounds every herdr invocation. `agent start` waits for the agent to
+// become ready (herdr's own default is 30s), and these calls are made from the
+// TUI, so an unbounded wait is a permanently stuck overlay with no way out.
+const timeout = 45 * time.Second
+
+// ErrUnsafeArgument means a value would be read as a flag rather than as data.
+// herdr does NOT accept the --flag=value form (verified: it answers "unknown
+// option"), so a value beginning with "-" cannot be passed safely at all and
+// the only correct move is to refuse it.
+var ErrUnsafeArgument = errors.New("value would be read as a flag")
+
+func checkArg(what, v string) error {
+	if v == "" {
+		return fmt.Errorf("%s is empty: %w", what, ErrUnsafeArgument)
+	}
+	if strings.HasPrefix(v, "-") {
+		return fmt.Errorf("%s %q: %w", what, v, ErrUnsafeArgument)
+	}
+	return nil
+}
 
 // Bin is the herdr binary. Herdr sets HERDR_BIN_PATH when it invokes a plugin.
 func Bin() string {
@@ -2786,16 +2875,41 @@ func Bin() string {
 }
 
 func run(args ...string) ([]byte, error) {
-	cmd := exec.Command(Bin(), args...)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, Bin(), args...)
 	out, err := cmd.Output()
+	if ctx.Err() == context.DeadlineExceeded {
+		return nil, fmt.Errorf("herdr %v timed out after %s", args, timeout)
+	}
 	if err != nil {
 		var ee *exec.ExitError
 		if errors.As(err, &ee) {
+			// herdr's own diagnostic, about panes and processes — not
+			// conversation content.
 			return nil, fmt.Errorf("herdr %v: %s", args, ee.Stderr)
 		}
 		return nil, err
 	}
 	return out, nil
+}
+
+// The argv builders are separated from the calls so that flag ordering and
+// the placement of "--" are regression-tested without a running herdr.
+
+func splitArgv(cwd string) []string {
+	return []string{"pane", "split", "--current", "--direction", "right", "--cwd", cwd, "--no-focus"}
+}
+
+func agentStartArgv(name, paneID, sessionID string) []string {
+	return []string{"agent", "start", name, "--kind", "claude", "--pane", paneID, "--", "--resume", sessionID}
+}
+
+func openTreePaneArgv(cwd string) []string {
+	return []string{"plugin", "pane", "open",
+		"--plugin", "herdr-tree", "--entrypoint", "tree",
+		"--placement", "overlay", "--cwd", cwd}
 }
 
 type paneCurrentResp struct {
@@ -2860,8 +2974,10 @@ func parseSplit(b []byte) (string, error) {
 
 // Split opens a sibling pane to the right without stealing focus.
 func Split(cwd string) (string, error) {
-	out, err := run("pane", "split", "--current", "--direction", "right",
-		"--cwd", cwd, "--no-focus")
+	if err := checkArg("cwd", cwd); err != nil {
+		return "", err
+	}
+	out, err := run(splitArgv(cwd)...)
 	if err != nil {
 		return "", err
 	}
@@ -2870,16 +2986,23 @@ func Split(cwd string) (string, error) {
 
 // AgentStart launches Claude in an existing pane, resuming a session.
 func AgentStart(name, paneID, sessionID string) error {
-	_, err := run("agent", "start", name, "--kind", "claude",
-		"--pane", paneID, "--", "--resume", sessionID)
+	for _, c := range []struct{ what, v string }{
+		{"agent name", name}, {"pane id", paneID}, {"session id", sessionID},
+	} {
+		if err := checkArg(c.what, c.v); err != nil {
+			return err
+		}
+	}
+	_, err := run(agentStartArgv(name, paneID, sessionID)...)
 	return err
 }
 
 // OpenTreePane asks Herdr to open this plugin's overlay pane.
 func OpenTreePane(cwd string) error {
-	_, err := run("plugin", "pane", "open",
-		"--plugin", "herdr-tree", "--entrypoint", "tree",
-		"--placement", "overlay", "--cwd", cwd)
+	if err := checkArg("cwd", cwd); err != nil {
+		return err
+	}
+	_, err := run(openTreePaneArgv(cwd)...)
 	return err
 }
 ```
