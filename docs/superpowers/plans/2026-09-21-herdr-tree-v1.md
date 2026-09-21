@@ -3255,6 +3255,44 @@ func TestAdapterReadsViaTheDiscoveredPath(t *testing.T) {
 	}
 }
 
+func TestAgentNameIsUniquePerPane(t *testing.T) {
+	sid := "60c5b417-ec35-4ea6-93bb-8246b877b19f"
+	a := agentName(sid, "wA:p2")
+	b := agentName(sid, "wA:p3")
+	if a == b {
+		t.Fatalf("the same session in two panes produced the same name %q; herdr requires live agent names to be unique", a)
+	}
+	for _, n := range []string{a, b} {
+		if !strings.HasPrefix(n, "tree-") {
+			t.Fatalf("name %q must start with tree-", n)
+		}
+		if len(n) > 32 {
+			t.Fatalf("name %q is longer than herdr allows", n)
+		}
+		for _, r := range n {
+			ok := r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-' || r == '_'
+			if !ok {
+				t.Fatalf("name %q contains %q, outside [a-z0-9_-]", n, r)
+			}
+		}
+		if n[0] < 'a' || n[0] > 'z' {
+			t.Fatalf("name %q must start with a letter", n)
+		}
+	}
+}
+
+func TestPreviewRejectsAnUnknownNode(t *testing.T) {
+	projects := t.TempDir()
+	t.Setenv("CLAUDE_PROJECTS_DIR", projects)
+	repoDir := t.TempDir()
+	writeSession(t, projects, "11111111-1111-4111-8111-111111111111", repoDir)
+
+	sessions, _ := New().Discover(repoDir)
+	if _, _, _, err := New().Preview(sessions[0], "no-such-node"); err == nil {
+		t.Fatal("want an error for a node that is not in the transcript")
+	}
+}
+
 func TestAdapterBranchRejectsUnknownNode(t *testing.T) {
 	projects := t.TempDir()
 	t.Setenv("CLAUDE_PROJECTS_DIR", projects)
@@ -3353,6 +3391,33 @@ func (claudeAdapter) Branch(src adapter.Session, atNode, dstCWD string) (string,
 	return sid, nil
 }
 
+// agentName builds a Herdr agent name for a session in a pane.
+//
+// It includes the pane because Herdr requires live agent names to be unique,
+// and a name derived from the session alone collides the moment the same
+// session is opened twice — a retry after a failure, or a session already
+// open elsewhere. Resume always creates a fresh pane, so the pane id makes
+// the name unique in practice.
+//
+// Herdr accepts [a-z][a-z0-9_-]{0,31}, so everything is lowercased, anything
+// outside that set is dropped, and the result is capped.
+func agentName(sessionID, paneID string) string {
+	keep := func(s string) string {
+		var b strings.Builder
+		for _, r := range strings.ToLower(s) {
+			if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' {
+				b.WriteRune(r)
+			}
+		}
+		return b.String()
+	}
+	n := "tree-" + keep(strings.SplitN(sessionID, "-", 2)[0]) + "-" + keep(paneID)
+	if len(n) > 32 {
+		n = n[:32]
+	}
+	return strings.TrimRight(n, "-")
+}
+
 // Resume asks Herdr for a pane and starts Claude in it. Nothing is spawned
 // by this process.
 func (claudeAdapter) Resume(sessionID, cwd string) error {
@@ -3360,9 +3425,10 @@ func (claudeAdapter) Resume(sessionID, cwd string) error {
 	if err != nil {
 		return fmt.Errorf("open pane: %w", err)
 	}
-	name := "tree-" + strings.SplitN(sessionID, "-", 2)[0]
-	if err := herdr.AgentStart(name, paneID, sessionID); err != nil {
-		return fmt.Errorf("start claude: %w", err)
+	if err := herdr.AgentStart(agentName(sessionID, paneID), paneID, sessionID); err != nil {
+		// Say that the pane exists, so the empty pane the user is now looking
+		// at is explained rather than mysterious.
+		return fmt.Errorf("opened pane %s but could not start claude in it: %w", paneID, err)
 	}
 	return nil
 }
