@@ -87,6 +87,9 @@ func headCWD(path string) string {
 			return probe.CWD
 		}
 	}
+	// No sc.Err() check: a scan error here just means no cwd was found in the
+	// head, which already returns "" below and causes Discover to skip the
+	// file — the correct outcome either way, not an oversight.
 	return ""
 }
 
