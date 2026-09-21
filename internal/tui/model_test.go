@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -41,8 +42,10 @@ func TestRowsFlattensDepthFirst(t *testing.T) {
 	if len(got) != 3 || got[0] != want[0] || got[2] != want[2] {
 		t.Fatalf("got %v want %v", got, want)
 	}
-	if m.Rows()[2].Depth != 2 {
-		t.Fatalf("depth %d want 2", m.Rows()[2].Depth)
+	// A session's turns are a path, not a hierarchy: turn 3 is not "inside"
+	// turn 2, so same-session steps do not indent.
+	if m.Rows()[2].Depth != 0 {
+		t.Fatalf("depth %d want 0 (same session, no graft)", m.Rows()[2].Depth)
 	}
 }
 
@@ -168,6 +171,114 @@ func TestLabelledDensityShowsABuriedLabelledTurn(t *testing.T) {
 		if id == "n2" {
 			t.Fatalf("unlabelled, non-root turn should not render at DensityLabelled: %v", got)
 		}
+	}
+}
+
+// graftChain builds a chain like chain() but under its own session id, and
+// attaches it as a child of parent — the one thing that is supposed to earn
+// an indent.
+func graftChain(sessionID string, parent *tree.Node, ids ...string) *tree.Node {
+	var head, prev *tree.Node
+	for i, id := range ids {
+		n := &tree.Node{
+			Node:          adapter.Node{ID: id, Title: "turn " + id},
+			SessionID:     sessionID,
+			IsSessionRoot: i == 0,
+			Grafted:       i == 0,
+		}
+		if prev == nil {
+			head = n
+		} else {
+			prev.Children = append(prev.Children, n)
+		}
+		prev = n
+	}
+	parent.Children = append(parent.Children, head)
+	return head
+}
+
+func TestALongSingleSessionRendersEveryRowAtDepthZero(t *testing.T) {
+	// A realistic count, not 3: the per-turn-indent bug only becomes visible
+	// at scale. A real session in this repo has 111 turns; its last row
+	// indented 220 columns off screen before this fix.
+	ids := make([]string, 111)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("n%d", i+1)
+	}
+	m := New([]*tree.Node{chain(ids...)})
+	rows := m.Rows()
+	if len(rows) != 111 {
+		t.Fatalf("got %d rows want 111", len(rows))
+	}
+	maxDepth := 0
+	for _, r := range rows {
+		if r.Depth > maxDepth {
+			maxDepth = r.Depth
+		}
+	}
+	if maxDepth != 0 {
+		t.Fatalf("max depth %d want 0: a session's turns are a path, not a hierarchy (last row's depth was %d)", maxDepth, rows[len(rows)-1].Depth)
+	}
+}
+
+func TestGraftedSessionIndentsOneLevelAndStaysThere(t *testing.T) {
+	root := chain("n1", "n2", "n3")
+	child := graftChain("s2", root.Children[0].Children[0], "m1", "m2", "m3") // grafted from n3
+
+	m := New([]*tree.Node{root})
+	byID := map[string]Row{}
+	for _, r := range m.Rows() {
+		byID[r.Node.Node.ID] = r
+	}
+	for _, id := range []string{"n1", "n2", "n3"} {
+		if byID[id].Depth != 0 {
+			t.Fatalf("%s at depth %d want 0", id, byID[id].Depth)
+		}
+	}
+	for _, id := range []string{"m1", "m2", "m3"} {
+		if byID[id].Depth != 1 {
+			t.Fatalf("%s at depth %d want 1: grafted session should sit one level deeper, and stay there for every turn of it", id, byID[id].Depth)
+		}
+	}
+	_ = child
+}
+
+func TestTwoGraftsFromTheSameTurnShareADepth(t *testing.T) {
+	root := chain("n1")
+	graftChain("first", root, "a1")
+	graftChain("second", root, "b1")
+
+	m := New([]*tree.Node{root})
+	byID := map[string]Row{}
+	for _, r := range m.Rows() {
+		byID[r.Node.Node.ID] = r
+	}
+	if byID["a1"].Depth != byID["b1"].Depth {
+		t.Fatalf("two branches taken from the same turn should sit at the same depth: a1=%d b1=%d", byID["a1"].Depth, byID["b1"].Depth)
+	}
+	if byID["a1"].Depth != 1 {
+		t.Fatalf("depth %d want 1", byID["a1"].Depth)
+	}
+}
+
+func TestMaxDepthTracksGraftNestingNotTurnCount(t *testing.T) {
+	// This is the property that actually broke: depth used to equal the turn
+	// number, so a long session alone produced a deep tree. It must instead
+	// track how many graft edges are nested, which here is 2 regardless of
+	// how many turns each session has.
+	root := chain("n1", "n2", "n3", "n4", "n5") // 5 turns, no grafts: depth must stay 0
+	mid := graftChain("s2", root.Children[0].Children[0].Children[0].Children[0], "m1", "m2", "m3", "m4", "m5", "m6") // grafted, +6 turns
+	graftChain("s3", mid.Children[0].Children[0], "o1", "o2") // grafted again, one level deeper
+
+	m := New([]*tree.Node{root})
+	max := 0
+	for _, r := range m.Rows() {
+		if r.Depth > max {
+			max = r.Depth
+		}
+	}
+	if max != 2 {
+		t.Fatalf("max depth %d want 2 — two nested graft edges, not the 13-turn total", max)
 	}
 }
 
