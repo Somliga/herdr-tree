@@ -1,0 +1,11 @@
+{"type":"user","uuid":"u1","parentUuid":null,"sessionId":"S","cwd":"/repo","version":"2.1.278","timestamp":"2026-01-01T10:00:00Z","message":{"role":"user","content":[{"type":"text","text":"first question"}]}}
+{"type":"assistant","uuid":"a1","parentUuid":"u1","sessionId":"S","requestId":"r1","timestamp":"2026-01-01T10:00:05Z","message":{"role":"assistant","content":[{"type":"thinking","thinking":"hmm"}]}}
+{"type":"assistant","uuid":"a2","parentUuid":"u1","sessionId":"S","requestId":"r1","timestamp":"2026-01-01T10:00:06Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash"}]}}
+{"type":"attachment","uuid":"at1","parentUuid":"u1","sessionId":"S","timestamp":"2026-01-01T10:00:07Z","attachment":{"kind":"reminder"}}
+{"type":"user","uuid":"tr1","parentUuid":"a2","sessionId":"S","timestamp":"2026-01-01T10:00:08Z","toolUseResult":{"ok":true},"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1"}]}}
+{"type":"user","uuid":"u2","parentUuid":"tr1","sessionId":"S","timestamp":"2026-01-01T10:00:09Z","message":{"role":"user","content":[{"type":"text","text":"Continue from where you left off."}]}}
+{"type":"user","uuid":"u3","parentUuid":"u2","sessionId":"S","timestamp":"2026-01-01T10:00:10Z","message":{"role":"user","content":[{"type":"text","text":"second question\nwith a second line"}]}}
+{"type":"assistant","uuid":"a3","parentUuid":"u3","sessionId":"S","requestId":"r2","timestamp":"2026-01-01T10:00:11Z","message":{"role":"assistant","content":[{"type":"text","text":"answer"}]}}
+{"type":"user","uuid":"sc1","parentUuid":"a3","sessionId":"S","isSidechain":true,"timestamp":"2026-01-01T10:00:12Z","message":{"role":"user","content":[{"type":"text","text":"subagent prompt"}]}}
+{"type":"last-prompt","leafUuid":"a3","sessionId":"S"}
+{"type":"ai-title","aiTitle":"Fixture session","sessionId":"S"}
