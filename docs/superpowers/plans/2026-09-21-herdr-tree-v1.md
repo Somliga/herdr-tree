@@ -4097,6 +4097,7 @@ package tui
 
 import (
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -4227,6 +4228,24 @@ func TestKeystrokesAreIgnoredWhileAnActionIsInFlight(t *testing.T) {
 	after2, cmd := u.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
 	if !after2.(uiModel).quitting || cmd == nil {
 		t.Fatal("ctrl+c must not be swallowed while busy")
+	}
+}
+
+func TestDstCWDFallsBackWhenTheSessionDirectoryIsGone(t *testing.T) {
+	live := t.TempDir()
+	gone := filepath.Join(t.TempDir(), "removed-worktree")
+	root := t.TempDir()
+
+	u := uiModel{repoRoot: root}
+
+	if got := u.dstCWD(&tree.Node{SessionCWD: live}); got != live {
+		t.Fatalf("an existing session directory must be used: got %q want %q", got, live)
+	}
+	if got := u.dstCWD(&tree.Node{SessionCWD: gone}); got != root {
+		t.Fatalf("a removed worktree must fall back to the repo root: got %q want %q", got, root)
+	}
+	if got := u.dstCWD(&tree.Node{SessionCWD: ""}); got != root {
+		t.Fatalf("an empty session cwd must fall back to the repo root: got %q want %q", got, root)
 	}
 }
 
