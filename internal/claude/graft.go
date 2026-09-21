@@ -83,14 +83,6 @@ var ErrPartialTranscript = errors.New("source transcript has unparseable lines")
 // verifiedMajorMinor is the format this adapter was validated against.
 const verifiedMajorMinor = "2.1"
 
-// droppedTypes are session-scoped bookkeeping entries that must not be
-// copied into a new session.
-var droppedTypes = map[string]bool{
-	"last-prompt": true,
-	"ai-title":    true,
-	"cost-state":  true,
-}
-
 func checkVersion(es []Entry) error {
 	for _, e := range es {
 		v := e.Version()
@@ -101,7 +93,10 @@ func checkVersion(es []Entry) error {
 		if len(parts) < 2 || parts[0]+"."+parts[1] != verifiedMajorMinor {
 			return ErrUnsupportedVersion
 		}
-		return nil
+		// Keep scanning. A transcript can span a Claude Code upgrade, and
+		// returning on the first versioned entry would accept a file whose
+		// later entries use a format this adapter has never been validated
+		// against.
 	}
 	return nil // no version stamped anywhere: nothing to disagree with
 }
@@ -151,13 +146,26 @@ func Graft(srcPath, atNode, dstCWD string) (newSessionID, dstPath string, err er
 	var buf []byte
 	for _, e := range es {
 		u := e.UUID()
-		if u != "" && !keep[u] {
+		if u == "" {
+			// Every uuid-less entry is session-scoped bookkeeping: mode,
+			// permission-mode, atis-latch, queue-operation (which carries
+			// queued prompt TEXT), relocated and worktree-state (the old
+			// working directory), file-history-snapshot/delta, the artifact
+			// ledgers (which carry an accountUuid), last-prompt, ai-title,
+			// cost-state. All of it belongs to the session being branched
+			// FROM. A denylist here is default-allow and silently leaks
+			// whatever entry types Claude Code adds next, so drop the lot.
+			// Verified empirically: a graft containing no bookkeeping at all
+			// resumes correctly, and Claude Code writes fresh entries of its
+			// own on resume.
 			continue
 		}
-		if u == "" && droppedTypes[e.Type()] {
+		if !keep[u] {
 			continue
 		}
-		// Copy the map so the source entries stay untouched.
+		// Shallow copy, so the source entries stay untouched. Only top-level
+		// keys are rewritten below; nested maps (message, attachment,
+		// toolUseResult) still alias the source, so never mutate inside them.
 		m := make(map[string]any, len(e.Raw))
 		for k, v := range e.Raw {
 			m[k] = v

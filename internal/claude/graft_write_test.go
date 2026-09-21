@@ -3,6 +3,7 @@ package claude
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -92,6 +93,75 @@ func TestGraftRefusesPartialTranscript(t *testing.T) {
 	}
 	if _, _, err := Graft(src, "u3", t.TempDir()); err != ErrPartialTranscript {
 		t.Fatalf("got %v want ErrPartialTranscript — a dropped line can break the parent chain", err)
+	}
+}
+
+func TestGraftDropsSessionScopedBookkeeping(t *testing.T) {
+	projects := t.TempDir()
+	t.Setenv("CLAUDE_PROJECTS_DIR", projects)
+	src := filepath.Join(t.TempDir(), "s.jsonl")
+	good, err := os.ReadFile("testdata/simple.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Entry types that really occur, each carrying state that belongs to the
+	// session being branched FROM.
+	extra := strings.Join([]string{
+		`{"type":"mode","mode":"bypassPermissions","sessionId":"S"}`,
+		`{"type":"permission-mode","permissionMode":"bypassPermissions","sessionId":"S"}`,
+		`{"type":"queue-operation","operation":"add","content":"a queued prompt from the old session","sessionId":"S"}`,
+		`{"type":"relocated","relocatedCwd":"/old/worktree","sessionId":"S"}`,
+		`{"type":"file-history-snapshot","messageId":"m1","snapshot":{}}`,
+	}, "\n") + "\n"
+	if err := os.WriteFile(src, append(good, []byte(extra)...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, dst, err := Graft(src, "u3", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, leak := range []string{
+		"bypassPermissions",
+		"a queued prompt from the old session",
+		"/old/worktree",
+		"file-history-snapshot",
+	} {
+		if strings.Contains(string(b), leak) {
+			t.Fatalf("old-session state leaked into the graft: %q", leak)
+		}
+	}
+	es, _, err := ParseFile(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range es {
+		if e.UUID() == "" && e.Type() != "last-prompt" {
+			t.Fatalf("uuid-less %q entry carried into the new session", e.Type())
+		}
+	}
+}
+
+func TestGraftRefusesVersionMismatchAfterTheFirstEntry(t *testing.T) {
+	projects := t.TempDir()
+	t.Setenv("CLAUDE_PROJECTS_DIR", projects)
+	src := filepath.Join(t.TempDir(), "s.jsonl")
+	good, err := os.ReadFile("testdata/simple.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The fixture's FIRST entry is 2.1.278, so a first-entry-wins check would
+	// accept this file. A transcript spanning an upgrade must be refused.
+	later := []byte(`{"type":"user","uuid":"u9","parentUuid":"u3","sessionId":"S","cwd":"/repo","version":"99.0.0","message":{"role":"user","content":[{"type":"text","text":"later"}]}}` + "\n")
+	if err := os.WriteFile(src, append(good, later...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := Graft(src, "u3", t.TempDir()); err != ErrUnsupportedVersion {
+		t.Fatalf("got %v want ErrUnsupportedVersion", err)
 	}
 }
 
