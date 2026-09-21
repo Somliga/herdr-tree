@@ -134,6 +134,42 @@ func TestGraftLeavesNoToolUseWithoutItsResult(t *testing.T) {
 	}
 }
 
+func TestSelectDoesNotKeepWorkFromAfterTheGraftPoint(t *testing.T) {
+	// An assistant turn AFTER the branch point shares nothing with the chain,
+	// but an unbounded requestId sweep can still reach it. Nothing authored
+	// after the branch belongs in the graft.
+	es, _, err := ParseFile("testdata/parallel.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Append a later turn whose response reuses requestId r1.
+	later := []string{
+		`{"type":"user","uuid":"u3","parentUuid":"u2","sessionId":"S","timestamp":"2026-01-01T10:00:07Z","message":{"role":"user","content":[{"type":"text","text":"third"}]}}`,
+		`{"type":"assistant","uuid":"a9","parentUuid":"u3","sessionId":"S","requestId":"r1","timestamp":"2026-01-01T10:00:08Z","message":{"role":"assistant","content":[{"type":"text","text":"later work"}]}}`,
+	}
+	for _, l := range later {
+		e, err := parseLine([]byte(l))
+		if err != nil {
+			t.Fatal(err)
+		}
+		es = append(es, e)
+	}
+
+	keep, err := Select(es, "u2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if keep["a9"] {
+		t.Fatal("kept an assistant entry written after the graft point: that is work the user branched away from")
+	}
+	if keep["u3"] {
+		t.Fatal("kept a prompt from after the graft point")
+	}
+	if !keep["a2"] {
+		t.Fatal("the bound must not drop the legitimate same-turn sibling a2")
+	}
+}
+
 func TestSelectUnknownNode(t *testing.T) {
 	es, _, _ := ParseFile("testdata/simple.jsonl")
 	if _, err := Select(es, "nope"); err != ErrNodeNotFound {

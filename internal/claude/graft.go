@@ -35,9 +35,11 @@ var ErrNodeNotFound = errors.New("graft node not found in transcript")
 // real conversation content, and only the tree view hides it.
 func Select(es []Entry, atNode string) (map[string]bool, error) {
 	byUUID := make(map[string]Entry, len(es))
-	for _, e := range es {
+	order := make(map[string]int, len(es))
+	for i, e := range es {
 		if u := e.UUID(); u != "" {
 			byUUID[u] = e
+			order[u] = i
 		}
 	}
 	if _, ok := byUUID[atNode]; !ok {
@@ -56,7 +58,23 @@ func Select(es []Entry, atNode string) (map[string]bool, error) {
 		cur = e.ParentUUID()
 	}
 
-	// Rule 2.
+	// Rule 2, bounded to entries at or before the graft point.
+	//
+	// A requestId identifies a whole assistant turn, so an unbounded sweep can
+	// pull in entries written AFTER the branch — importing work the user chose
+	// to prune. Measured across every graft point in 103 real transcripts: 14
+	// assistant and 14 user entries were captured this way. Small, but it is
+	// content from a branch the user deliberately left behind, which is the
+	// opposite of what this function is for.
+	//
+	// The bound is deliberately on rule 2 only. Rule 3's attachments are
+	// system-reminders injected WITH a kept prompt and hang off it as
+	// children, so they are legitimately part of that turn even though they
+	// are written later — 2828 of them across the same corpus.
+	at, ok := order[atNode]
+	if !ok {
+		return nil, ErrNodeNotFound
+	}
 	reqs := map[string]bool{}
 	for u := range keep {
 		if e := byUUID[u]; e.Type() == "assistant" && e.RequestID() != "" {
@@ -65,28 +83,34 @@ func Select(es []Entry, atNode string) (map[string]bool, error) {
 	}
 	for _, e := range es {
 		if e.Type() == "assistant" && e.RequestID() != "" && reqs[e.RequestID()] {
-			if u := e.UUID(); u != "" {
+			if u := e.UUID(); u != "" && order[u] <= at {
 				keep[u] = true
 			}
 		}
 	}
 
-	// Rule 3.
-	for _, e := range es {
-		if e.Type() == "attachment" && keep[e.ParentUUID()] {
-			if u := e.UUID(); u != "" {
+	// Rules 3 and 4, iterated to a fixpoint.
+	//
+	// A single file-order pass happens to work for attachments only because
+	// Claude Code writes them after their parent. That is an accident of the
+	// format, not a guarantee, and a tool_result recovered by rule 4 can
+	// itself have attachment children. Looping until nothing new is added
+	// removes the dependency on write order entirely. The corpus converges in
+	// two passes; the loop is bounded by the entry count regardless.
+	for {
+		added := false
+		for _, e := range es {
+			u := e.UUID()
+			if u == "" || keep[u] || !keep[e.ParentUUID()] {
+				continue
+			}
+			if e.Type() == "attachment" || (e.Type() == "user" && e.IsToolResult()) {
 				keep[u] = true
+				added = true
 			}
 		}
-	}
-
-	// Rule 4. After rule 2, because the tool_use an orphaned result answers is
-	// often pulled in by requestId rather than by the chain.
-	for _, e := range es {
-		if e.Type() == "user" && e.IsToolResult() && keep[e.ParentUUID()] {
-			if u := e.UUID(); u != "" {
-				keep[u] = true
-			}
+		if !added {
+			break
 		}
 	}
 
