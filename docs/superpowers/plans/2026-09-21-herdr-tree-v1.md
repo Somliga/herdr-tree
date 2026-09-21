@@ -4439,14 +4439,21 @@ work=$(mktemp -d)
 graft=""
 # Clean up BOTH the temp cwd and the session this writes into Claude Code's
 # own store. Without the second part every run leaves a directory behind in
-# ~/.claude/projects and clutters the /resume picker. The file is removed by
-# name and the directory with rmdir, which refuses to touch a non-empty one —
-# safer than rm -rf on a computed path.
+# ~/.claude/projects and clutters the /resume picker.
+#
+# rmdir, never rm -rf: it refuses on a non-empty directory, so a computed path
+# can never delete something unexpected. That conservatism earned its keep —
+# the first version of this cleanup failed precisely because Claude Code had
+# created a memory/ subdirectory, and rmdir surfaced that instead of quietly
+# deleting it.
 cleanup() {
   rm -rf "$work"
   if [ -n "$graft" ]; then
+    dir=$(dirname "$graft")
     rm -f "$graft"
-    rmdir "$(dirname "$graft")" 2>/dev/null || true
+    # Claude Code also creates an empty memory/ subdirectory per project.
+    rmdir "$dir/memory" 2>/dev/null || true
+    rmdir "$dir" 2>/dev/null || true
   fi
 }
 trap cleanup EXIT
