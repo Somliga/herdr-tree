@@ -154,3 +154,63 @@ func TestCorruptStoreIsBackedUpNotFatal(t *testing.T) {
 		t.Fatal("corrupt file was not preserved as a backup")
 	}
 }
+
+func TestLabelRoundTripsAndClears(t *testing.T) {
+	t.Setenv("HERDR_PLUGIN_CONFIG_DIR", t.TempDir())
+	s, _ := Load("/repo")
+	s.SetLabel("sess-a", "u3", "landmark")
+	if err := s.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	again, err := Load("/repo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := again.Labels[LabelKey("sess-a", "u3")]; got != "landmark" {
+		t.Fatalf("label did not survive save/load: got %q", got)
+	}
+
+	again.SetLabel("sess-a", "u3", "")
+	if err := again.Save(); err != nil {
+		t.Fatal(err)
+	}
+	final, err := Load("/repo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := final.Labels[LabelKey("sess-a", "u3")]; ok {
+		t.Fatal("clearing a label with an empty string should remove the key")
+	}
+}
+
+func TestConcurrentSavesKeepBothLabels(t *testing.T) {
+	t.Setenv("HERDR_PLUGIN_CONFIG_DIR", t.TempDir())
+
+	// Two panes each Load the same store...
+	paneA, _ := Load("/repo")
+	paneB, _ := Load("/repo")
+
+	// ...each labels a DIFFERENT turn...
+	paneA.SetLabel("src", "u1", "one")
+	paneB.SetLabel("src", "u3", "three")
+
+	// ...and both save.
+	if err := paneA.Save(); err != nil {
+		t.Fatal(err)
+	}
+	if err := paneB.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	final, err := Load("/repo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if final.Labels[LabelKey("src", "u1")] != "one" {
+		t.Fatal("pane A's label was silently discarded by pane B's save")
+	}
+	if final.Labels[LabelKey("src", "u3")] != "three" {
+		t.Fatal("pane B's label is missing")
+	}
+}

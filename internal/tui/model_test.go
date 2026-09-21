@@ -123,3 +123,62 @@ func TestEmptyForestHasNoSelection(t *testing.T) {
 		t.Fatal("want nil selection")
 	}
 }
+
+func TestCycleDensityReturnsToStartAndKeepsRootVisible(t *testing.T) {
+	root := chain("n1", "n2", "n3")
+	m := New([]*tree.Node{root})
+	if m.Density != DensityAll {
+		t.Fatalf("Density = %v want DensityAll", m.Density)
+	}
+	for i := 0; i < 3; i++ {
+		m.CycleDensity()
+		var sawRoot bool
+		for _, r := range m.Rows() {
+			if r.Node == root {
+				sawRoot = true
+			}
+		}
+		if !sawRoot {
+			t.Fatalf("session root hidden at density %v", m.Density)
+		}
+	}
+	if m.Density != DensityAll {
+		t.Fatalf("after three cycles Density = %v want DensityAll", m.Density)
+	}
+}
+
+func TestLabelledDensityShowsABuriedLabelledTurn(t *testing.T) {
+	root := chain("n1", "n2", "n3")
+	buried := root.Children[0].Children[0] // n3, under unlabelled n2
+	buried.Label = "landmark"
+
+	m := New([]*tree.Node{root})
+	m.Density = DensityLabelled
+	got := ids(m.Rows())
+	var sawBuried bool
+	for _, id := range got {
+		if id == "n3" {
+			sawBuried = true
+		}
+	}
+	if !sawBuried {
+		t.Fatalf("labelled turn buried under unlabelled parents did not render: %v", got)
+	}
+	for _, id := range got {
+		if id == "n2" {
+			t.Fatalf("unlabelled, non-root turn should not render at DensityLabelled: %v", got)
+		}
+	}
+}
+
+func TestCycleDensityKeepsCursorOnAStillVisibleNode(t *testing.T) {
+	root := chain("n1", "n2", "n3") // root is always visible at every density
+	m := New([]*tree.Node{root})
+	if m.Cursor != 0 || m.Selected() != root {
+		t.Fatalf("setup: cursor should start on the root")
+	}
+	m.CycleDensity()
+	if m.Selected() != root {
+		t.Fatalf("cursor moved off a node that remained visible: now on %+v", m.Selected())
+	}
+}

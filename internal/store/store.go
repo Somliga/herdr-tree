@@ -32,8 +32,14 @@ type Store struct {
 	Version  int               `json:"version"`
 	RepoRoot string            `json:"repo_root"`
 	Branches map[string]Branch `json:"branches"`
+	// Labels marks turns the user wants to find again, keyed "<session>:<turn>".
+	// Landmarking a turn is deliberately separate from branching from it: in
+	// practice you notice a point matters before you know whether you will go
+	// back to it, and a label costs nothing while a branch costs a session.
+	Labels map[string]string `json:"labels,omitempty"`
 
-	path string
+	path          string
+	deletedLabels map[string]bool // keys cleared via SetLabel since Load, so Save's merge does not resurrect them
 }
 
 // Dir is Herdr's per-plugin config directory.
@@ -93,6 +99,28 @@ func Load(repoRoot string) (*Store, error) {
 	return &loaded, nil
 }
 
+// LabelKey identifies a turn for labelling.
+func LabelKey(sessionID, turnID string) string { return sessionID + ":" + turnID }
+
+// SetLabel records or clears a landmark on a turn. An empty text removes it,
+// so the same key toggles.
+func (s *Store) SetLabel(sessionID, turnID, text string) {
+	if s.Labels == nil {
+		s.Labels = map[string]string{}
+	}
+	k := LabelKey(sessionID, turnID)
+	if text == "" {
+		delete(s.Labels, k)
+		if s.deletedLabels == nil {
+			s.deletedLabels = map[string]bool{}
+		}
+		s.deletedLabels[k] = true
+		return
+	}
+	delete(s.deletedLabels, k)
+	s.Labels[k] = text
+}
+
 // Add records a graft edge, keyed by the new session's id.
 func (s *Store) Add(sessionID string, b Branch) {
 	if b.Artifacts == nil {
@@ -124,6 +152,17 @@ func (s *Store) Save() error {
 		for id, b := range onDisk.Branches {
 			if _, ours := s.Branches[id]; !ours {
 				s.Branches[id] = b
+			}
+		}
+		for k, v := range onDisk.Labels {
+			if s.deletedLabels[k] {
+				continue // cleared locally since Load: do not resurrect it
+			}
+			if s.Labels == nil {
+				s.Labels = map[string]string{}
+			}
+			if _, ours := s.Labels[k]; !ours {
+				s.Labels[k] = v
 			}
 		}
 	}

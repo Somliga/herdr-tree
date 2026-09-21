@@ -23,6 +23,7 @@ type Node struct {
 	IsSessionRoot bool
 	Grafted       bool // this node starts a session branched from its parent
 	Broken        bool // session present but unreadable or empty
+	Label         string
 	Children      []*Node
 }
 
@@ -49,6 +50,7 @@ func Build(sessions []adapter.Session, s *store.Store) []*Node {
 				SessionTitle: sess.Title,
 				IsSessionRoot: i == 0, Broken: sess.Broken,
 			}
+			n.Label = s.Labels[store.LabelKey(sess.ID, t.ID)]
 			nodeIndex[sess.ID][t.ID] = n
 			if prev == nil {
 				head = n

@@ -50,6 +50,9 @@ func renderRow(r Row, selected bool, currentSession string, width int) string {
 		b.WriteString("▸ ")
 	}
 
+	if r.Node.Label != "" {
+		b.WriteString("★ " + r.Node.Label + "  ")
+	}
 	title := r.Node.Node.Title
 	if title == "" && r.Node.Broken {
 		title = "transcript unreadable — metadata only"
@@ -86,6 +89,9 @@ type uiModel struct {
 	status   string
 	busy     string // non-empty while an adapter call is in flight
 	quitting bool
+
+	labelling *tree.Node // non-nil while typing a label
+	labelText string
 }
 
 // actionDoneMsg carries the result of an adapter call back onto the update
@@ -177,6 +183,27 @@ func (u uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return u, nil
 		}
+		if u.labelling != nil {
+			switch msg.Type {
+			case tea.KeyEnter:
+				n := u.labelling
+				u.st.SetLabel(n.SessionID, n.Node.ID, strings.TrimSpace(u.labelText))
+				n.Label = strings.TrimSpace(u.labelText)
+				if err := u.st.Save(); err != nil {
+					u.status = "label not saved: " + err.Error()
+				}
+				u.labelling, u.labelText = nil, ""
+			case tea.KeyEsc:
+				u.labelling, u.labelText = nil, ""
+			case tea.KeyBackspace:
+				if r := []rune(u.labelText); len(r) > 0 {
+					u.labelText = string(r[:len(r)-1])
+				}
+			case tea.KeyRunes, tea.KeySpace:
+				u.labelText += msg.String()
+			}
+			return u, nil
+		}
 		if u.confirm != "" {
 			switch msg.String() {
 			case "enter":
@@ -211,6 +238,15 @@ func (u uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			u.busy = "opening session…"
 			return u, resumeCmd(u.a, n, u.dstCWD(n))
+		case "d":
+			u.m.CycleDensity()
+		case "L":
+			n := u.m.Selected()
+			if n == nil || n.Node.ID == "" {
+				return u, nil
+			}
+			u.labelling = n
+			u.labelText = n.Label
 		case "b":
 			if n := u.m.Selected(); n != nil && !n.Broken {
 				src := adapter.Session{ID: n.SessionID, CWD: n.SessionCWD, Path: n.SessionPath}
@@ -230,6 +266,10 @@ func (u uiModel) View() string {
 	if u.quitting {
 		return ""
 	}
+	if u.labelling != nil {
+		return fmt.Sprintf("Label this turn:  %s\n\n  %q\n\n[enter] save   [esc] cancel   (empty clears)\n",
+			u.labelText, u.labelling.Node.Title)
+	}
 	if u.confirm != "" {
 		return u.confirm + "\n"
 	}
@@ -245,7 +285,7 @@ func (u uiModel) View() string {
 		}
 		b.WriteString(marker + renderRow(r, i == u.m.Cursor, u.current, u.width-2) + "\n")
 	}
-	b.WriteString("\n↑↓ move  ←→ fold  ⏎ open  b branch  esc close\n")
+	b.WriteString(fmt.Sprintf("\n↑↓ move  ←→ fold  ⏎ open  b branch  L label  d density:%s  esc close\n", u.m.Density))
 	if u.busy != "" {
 		b.WriteString(u.busy + "\n")
 	}
