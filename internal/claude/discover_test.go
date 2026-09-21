@@ -35,8 +35,80 @@ func writeSession(t *testing.T, projects, id, cwd string) {
 }
 
 func TestSlugFor(t *testing.T) {
-	if got := SlugFor("/home/a/projects/x"); got != "-home-a-projects-x" {
-		t.Fatalf("got %q", got)
+	// Verified against Claude Code 2.1.278: every non-alphanumeric rune
+	// becomes "-", per rune rather than per byte. Writing a graft into the
+	// wrong directory produces a session Claude Code can never find.
+	cases := []struct{ in, want string }{
+		{"/home/a/projects/x", "-home-a-projects-x"},
+		{"/home/a/doc writing", "-home-a-doc-writing"},
+		{"/home/a/slug_test.dir v2+x", "-home-a-slug-test-dir-v2-x"},
+		{"/home/a/Solör Bioenergi", "-home-a-Sol-r-Bioenergi"},
+		{"/home/a/keeps-dashes", "-home-a-keeps-dashes"},
+	}
+	for _, c := range cases {
+		if got := SlugFor(c.in); got != c.want {
+			t.Fatalf("SlugFor(%q) = %q want %q", c.in, got, c.want)
+		}
+	}
+}
+
+func TestDiscoverCarriesTheDiscoveredPath(t *testing.T) {
+	projects := t.TempDir()
+	t.Setenv("CLAUDE_PROJECTS_DIR", projects)
+	repoDir := t.TempDir()
+	id := "11111111-1111-4111-8111-111111111111"
+	writeSession(t, projects, id, repoDir)
+
+	got, err := Discover(repoDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(projects, SlugFor(repoDir), id+".jsonl")
+	if got[0].Path != want {
+		t.Fatalf("Path = %q want %q", got[0].Path, want)
+	}
+}
+
+func TestDiscoverFindsASessionWhoseCWDDoesNotMatchItsDirectory(t *testing.T) {
+	// A session that relocated into a worktree keeps its original cwd while
+	// its transcript lives under a differently named project directory.
+	// Reconstructing the path from the cwd would miss it entirely.
+	projects := t.TempDir()
+	t.Setenv("CLAUDE_PROJECTS_DIR", projects)
+	repoDir := t.TempDir()
+	id := "22222222-2222-4222-8222-222222222222"
+
+	es, _, err := ParseFile("testdata/simple.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	odd := filepath.Join(projects, "-some-unrelated-worktree-name")
+	if err := os.MkdirAll(odd, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Create(filepath.Join(odd, id+".jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range es {
+		if _, ok := e.Raw["cwd"]; ok {
+			e.Raw["cwd"] = repoDir
+		}
+		e.Raw["sessionId"] = id
+		b, _ := Marshal(e)
+		f.Write(append(b, '\n'))
+	}
+	f.Close()
+
+	got, err := Discover(repoDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("sessions %d want 1", len(got))
+	}
+	if got[0].Path != filepath.Join(odd, id+".jsonl") {
+		t.Fatalf("Path = %q; must be where the file WAS FOUND, not where its cwd implies", got[0].Path)
 	}
 }
 

@@ -23,8 +23,31 @@ func ProjectsDir() string {
 	return filepath.Join(home, ".claude", "projects")
 }
 
-// SlugFor is Claude Code's directory name for a working directory.
-func SlugFor(cwd string) string { return strings.ReplaceAll(cwd, "/", "-") }
+// SlugFor is Claude Code's directory name for a working directory: every
+// rune that is not a letter or digit becomes "-".
+//
+// Verified empirically against Claude Code 2.1.278 by running it in a
+// directory named `slug_test.dir v2+x`, which produced `slug-test-dir-v2-x`:
+// "/", "_", ".", " " and "+" all collapse to "-". It is per RUNE, not per
+// byte — a real transcript here shows `Solör Bioenergi` becoming
+// `Sol-r-Bioenergi`, one dash for a two-byte character.
+//
+// Getting this wrong is not cosmetic: a graft written into the wrong
+// directory is a session Claude Code will never find, so the branch silently
+// cannot be resumed.
+func SlugFor(cwd string) string {
+	var b strings.Builder
+	b.Grow(len(cwd))
+	for _, r := range cwd {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('-')
+		}
+	}
+	return b.String()
+}
 
 // sessionCWD returns the first cwd recorded in a transcript. The directory
 // name is a lossy encoding of the path, so it is never used for this.
@@ -68,6 +91,7 @@ func Discover(repoRoot string) ([]adapter.Session, error) {
 		out = append(out, adapter.Session{
 			ID:      id,
 			CWD:     cwd,
+			Path:    p,
 			Title:   SessionTitle(es),
 			Updated: updated,
 			Nodes:   Turns(es),

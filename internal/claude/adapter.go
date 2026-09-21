@@ -22,15 +22,26 @@ func (claudeAdapter) Discover(repoRoot string) ([]adapter.Session, error) {
 
 func (claudeAdapter) Current(p adapter.Pane) (string, error) { return Current(p) }
 
-// TranscriptPath is where a session's transcript lives, given its cwd.
+// TranscriptPath is where Claude Code will look for a session started in
+// cwd. Use it for a file about to be WRITTEN. To READ an existing session,
+// use Session.Path, which is where the file was actually found — the two
+// disagree for a session that relocated into a worktree.
 func TranscriptPath(sessionID, cwd string) string {
 	return filepath.Join(ProjectsDir(), SlugFor(cwd), sessionID+".jsonl")
 }
 
+// sourcePath prefers the discovered path and falls back to reconstruction
+// for a Session built by hand.
+func sourcePath(src adapter.Session) string {
+	if src.Path != "" {
+		return src.Path
+	}
+	return TranscriptPath(src.ID, src.CWD)
+}
+
 // Preview reports what a graft at atNode would carry, without writing.
 func (claudeAdapter) Preview(src adapter.Session, atNode string) (turns, entries int, size int64, err error) {
-	path := TranscriptPath(src.ID, src.CWD)
-	es, _, err := ParseFile(path)
+	es, _, err := ParseFile(sourcePath(src))
 	if err != nil {
 		return 0, 0, 0, err
 	}
@@ -55,7 +66,7 @@ func (claudeAdapter) Preview(src adapter.Session, atNode string) (turns, entries
 }
 
 func (claudeAdapter) Branch(src adapter.Session, atNode, dstCWD string) (string, error) {
-	sid, _, err := Graft(TranscriptPath(src.ID, src.CWD), atNode, dstCWD)
+	sid, _, err := Graft(sourcePath(src), atNode, dstCWD)
 	if err != nil {
 		return "", err
 	}

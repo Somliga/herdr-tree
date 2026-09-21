@@ -15,6 +15,7 @@ type Node struct {
 type Session struct {
 	ID      string
 	CWD     string
+	Path    string    // where the transcript file was found
 	Title   string
 	Updated time.Time
 	Nodes   []Node // ordered root -> leaf

@@ -67,6 +67,52 @@ func TestAdapterPreviewCountsWhatIsCarried(t *testing.T) {
 	}
 }
 
+func TestAdapterReadsViaTheDiscoveredPath(t *testing.T) {
+	// The transcript sits in a directory whose name does not match the
+	// session's cwd, exactly as a relocated session does. Branch and Preview
+	// must still find it.
+	projects := t.TempDir()
+	t.Setenv("CLAUDE_PROJECTS_DIR", projects)
+	repoDir := t.TempDir()
+	id := "33333333-3333-4333-8333-333333333333"
+
+	es, _, err := ParseFile("testdata/simple.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	odd := filepath.Join(projects, "-relocated-elsewhere")
+	if err := os.MkdirAll(odd, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Create(filepath.Join(odd, id+".jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range es {
+		if _, ok := e.Raw["cwd"]; ok {
+			e.Raw["cwd"] = repoDir
+		}
+		e.Raw["sessionId"] = id
+		b, _ := Marshal(e)
+		f.Write(append(b, '\n'))
+	}
+	f.Close()
+
+	sessions, err := New().Discover(repoDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("sessions %d want 1", len(sessions))
+	}
+	if _, _, _, err := New().Preview(sessions[0], sessions[0].Nodes[1].ID); err != nil {
+		t.Fatalf("Preview could not read a relocated session: %v", err)
+	}
+	if _, err := New().Branch(sessions[0], sessions[0].Nodes[1].ID, repoDir); err != nil {
+		t.Fatalf("Branch could not read a relocated session: %v", err)
+	}
+}
+
 func TestAdapterBranchRejectsUnknownNode(t *testing.T) {
 	projects := t.TempDir()
 	t.Setenv("CLAUDE_PROJECTS_DIR", projects)
