@@ -355,7 +355,7 @@ import (
 )
 
 func TestParseFileReadsEveryLine(t *testing.T) {
-	es, _, err := ParseFile("testdata/simple.jsonl")
+	es, _, _, err := ParseFile("testdata/simple.jsonl")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -401,7 +401,7 @@ func TestParseFileCountsSkippedLines(t *testing.T) {
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	es, skipped, err := ParseFile(path)
+	es, skipped, _, err := ParseFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -414,7 +414,7 @@ func TestParseFileCountsSkippedLines(t *testing.T) {
 }
 
 func TestParseFileReportsZeroSkippedForCleanFile(t *testing.T) {
-	_, skipped, err := ParseFile("testdata/simple.jsonl")
+	_, skipped, _, err := ParseFile("testdata/simple.jsonl")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -668,7 +668,7 @@ package claude
 import "testing"
 
 func TestTurnsFiltersNonPrompts(t *testing.T) {
-	es, _, err := ParseFile("testdata/simple.jsonl")
+	es, _, _, err := ParseFile("testdata/simple.jsonl")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -862,7 +862,7 @@ import (
 // TranscriptPath will later look for it.
 func writeSession(t *testing.T, projects, id, cwd string) {
 	t.Helper()
-	es, _, err := ParseFile("testdata/simple.jsonl")
+	es, _, _, err := ParseFile("testdata/simple.jsonl")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -929,7 +929,7 @@ func TestDiscoverFindsASessionWhoseCWDDoesNotMatchItsDirectory(t *testing.T) {
 	repoDir := t.TempDir()
 	id := "22222222-2222-4222-8222-222222222222"
 
-	es, err := ParseFile("testdata/simple.jsonl")
+	es, _, err := ParseFile("testdata/simple.jsonl")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1146,7 +1146,7 @@ func Discover(repoRoot string) ([]adapter.Session, error) {
 
 	var out []adapter.Session
 	for _, p := range paths {
-		es, skipped, err := ParseFile(p)
+		es, skipped, _, err := ParseFile(p)
 		if err != nil || len(es) == 0 {
 			continue // unreadable: cannot be attributed to any repo
 		}
@@ -1244,7 +1244,7 @@ func keys(m map[string]bool) []string {
 }
 
 func TestSelectKeepsChainSiblingsAndAttachments(t *testing.T) {
-	es, _, err := ParseFile("testdata/simple.jsonl")
+	es, _, _, err := ParseFile("testdata/simple.jsonl")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1287,7 +1287,7 @@ func TestSelectAtRootKeepsOnlyRootAndItsSiblings(t *testing.T) {
 }
 
 func TestSelectKeepsEveryToolResultOfAParallelCall(t *testing.T) {
-	es, err := ParseFile("testdata/parallel.jsonl")
+	es, _, err := ParseFile("testdata/parallel.jsonl")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1315,7 +1315,7 @@ func TestGraftLeavesNoToolUseWithoutItsResult(t *testing.T) {
 	// tool_result kept too. Claude Code's own transcripts satisfy this; a
 	// graft that breaks it writes a conversation shape that cannot exist.
 	for _, fixture := range []string{"testdata/parallel.jsonl", "testdata/simple.jsonl"} {
-		es, err := ParseFile(fixture)
+		es, _, err := ParseFile(fixture)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1551,7 +1551,7 @@ func TestGraftWritesResumableSession(t *testing.T) {
 		t.Fatalf("mode %v want 0600 — conversation content must not be world readable", fi.Mode().Perm())
 	}
 
-	es, _, err := ParseFile(dst)
+	es, _, _, err := ParseFile(dst)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1645,7 +1645,7 @@ func TestGraftDropsSessionScopedBookkeeping(t *testing.T) {
 			t.Fatalf("old-session state leaked into the graft: %q", leak)
 		}
 	}
-	es, _, err := ParseFile(dst)
+	es, _, _, err := ParseFile(dst)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1759,7 +1759,7 @@ func newUUIDv4() (string, error) {
 // atNode, as a fresh session rooted at dstCWD, and returns its id and path.
 // The source transcript is never modified.
 func Graft(srcPath, atNode, dstCWD string) (newSessionID, dstPath string, err error) {
-	es, skipped, err := ParseFile(srcPath)
+	es, skipped, _, err := ParseFile(srcPath)
 	if err != nil {
 		return "", "", err
 	}
@@ -3338,7 +3338,7 @@ func TestAdapterReadsViaTheDiscoveredPath(t *testing.T) {
 	repoDir := t.TempDir()
 	id := "33333333-3333-4333-8333-333333333333"
 
-	es, err := ParseFile("testdata/simple.jsonl")
+	es, _, err := ParseFile("testdata/simple.jsonl")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3479,7 +3479,7 @@ func sourcePath(src adapter.Session) string {
 
 // Preview reports what a graft at atNode would carry, without writing.
 func (claudeAdapter) Preview(src adapter.Session, atNode string) (turns, entries int, size int64, err error) {
-	es, _, err := ParseFile(sourcePath(src))
+	es, _, _, err := ParseFile(sourcePath(src))
 	if err != nil {
 		return 0, 0, 0, err
 	}
