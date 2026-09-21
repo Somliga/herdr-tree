@@ -83,7 +83,58 @@ type uiModel struct {
 	height   int
 	confirm  string
 	status   string
+	busy     string // non-empty while an adapter call is in flight
 	quitting bool
+}
+
+// actionDoneMsg carries the result of an adapter call back onto the update
+// loop. `quit` is set only when the action succeeded — a failure must leave
+// the overlay open, because Bubble Tea paints its final frame into the alt
+// screen and then discards it on exit, so a message shown while quitting is
+// never actually read by anyone.
+type actionDoneMsg struct {
+	status string
+	quit   bool
+}
+
+// resumeCmd and branchCmd run OFF the update loop.
+//
+// herdr's `agent start` waits for the agent to become ready and is bounded at
+// 45 seconds. Doing that inside Update freezes every keystroke for the whole
+// duration with no feedback and no way to cancel, because Bubble Tea handles
+// one message at a time. As a tea.Cmd the work happens on its own goroutine
+// and the overlay keeps rendering.
+func resumeCmd(a adapter.Adapter, n *tree.Node) tea.Cmd {
+	return func() tea.Msg {
+		if err := a.Resume(n.SessionID, n.SessionCWD); err != nil {
+			return actionDoneMsg{status: "could not open session: " + err.Error()}
+		}
+		return actionDoneMsg{status: "opened " + shortID(n.SessionID), quit: true}
+	}
+}
+
+func branchCmd(a adapter.Adapter, st *store.Store, n *tree.Node) tea.Cmd {
+	return func() tea.Msg {
+		src := adapter.Session{ID: n.SessionID, CWD: n.SessionCWD, Path: n.SessionPath}
+		sid, err := a.Branch(src, n.Node.ID, n.SessionCWD)
+		if err != nil {
+			return actionDoneMsg{status: "branch failed: " + err.Error()}
+		}
+		// Record the edge before resuming: the transcript now exists, so the
+		// branch must survive even if opening it fails.
+		st.Add(sid, store.Branch{
+			GraftedFrom: store.From{SessionID: n.SessionID, Node: n.Node.ID},
+			Title:       n.Node.Title,
+			CreatedAt:   time.Now().UTC(),
+		})
+		if err := st.Save(); err != nil {
+			return actionDoneMsg{status: "branched " + shortID(sid) + ", but the tree was not saved: " + err.Error()}
+		}
+		if err := a.Resume(sid, n.SessionCWD); err != nil {
+			return actionDoneMsg{status: "branched " + shortID(sid) + ", but it did not open: " + err.Error()}
+		}
+		return actionDoneMsg{status: "branched " + shortID(sid), quit: true}
+	}
 }
 
 func (u uiModel) Init() tea.Cmd { return nil }
@@ -92,12 +143,34 @@ func (u uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		u.width, u.height = msg.Width, msg.Height
+	case actionDoneMsg:
+		u.busy = ""
+		u.status = msg.status
+		if msg.quit {
+			u.quitting = true
+			return u, tea.Quit
+		}
+		return u, nil
 	case tea.KeyMsg:
+		if u.busy != "" {
+			// An adapter call is in flight. Swallow input rather than queueing
+			// a second one, but never trap the user.
+			if msg.String() == "ctrl+c" {
+				u.quitting = true
+				return u, tea.Quit
+			}
+			return u, nil
+		}
 		if u.confirm != "" {
 			switch msg.String() {
 			case "enter":
-				u.status = u.doBranch()
+				n := u.m.Selected()
 				u.confirm = ""
+				if n == nil {
+					return u, nil
+				}
+				u.busy = "branching…"
+				return u, branchCmd(u.a, u.st, n)
 			case "esc", "q":
 				u.confirm = ""
 			}
@@ -116,8 +189,12 @@ func (u uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "right", "l":
 			u.m.Unfold()
 		case "enter":
-			u.status = u.doResume()
-			return u, tea.Quit
+			n := u.m.Selected()
+			if n == nil {
+				return u, nil
+			}
+			u.busy = "opening session…"
+			return u, resumeCmd(u.a, n)
 		case "b":
 			if n := u.m.Selected(); n != nil && !n.Broken {
 				src := adapter.Session{ID: n.SessionID, CWD: n.SessionCWD, Path: n.SessionPath}
@@ -131,41 +208,6 @@ func (u uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return u, nil
-}
-
-func (u *uiModel) doResume() string {
-	n := u.m.Selected()
-	if n == nil {
-		return ""
-	}
-	if err := u.a.Resume(n.SessionID, n.SessionCWD); err != nil {
-		return "could not open session: " + err.Error()
-	}
-	return "opened " + shortID(n.SessionID)
-}
-
-func (u *uiModel) doBranch() string {
-	n := u.m.Selected()
-	if n == nil {
-		return ""
-	}
-	src := adapter.Session{ID: n.SessionID, CWD: n.SessionCWD, Path: n.SessionPath}
-	sid, err := u.a.Branch(src, n.Node.ID, n.SessionCWD)
-	if err != nil {
-		return "branch failed: " + err.Error()
-	}
-	u.st.Add(sid, store.Branch{
-		GraftedFrom: store.From{SessionID: n.SessionID, Node: n.Node.ID},
-		Title:       n.Node.Title,
-		CreatedAt:   time.Now().UTC(),
-	})
-	if err := u.st.Save(); err != nil {
-		return "branched " + shortID(sid) + ", but the tree was not saved: " + err.Error()
-	}
-	if err := u.a.Resume(sid, n.SessionCWD); err != nil {
-		return "branched " + shortID(sid) + ", but it did not open: " + err.Error()
-	}
-	return "branched " + shortID(sid)
 }
 
 func (u uiModel) View() string {
@@ -188,6 +230,9 @@ func (u uiModel) View() string {
 		b.WriteString(marker + renderRow(r, i == u.m.Cursor, u.current, u.width-2) + "\n")
 	}
 	b.WriteString("\n↑↓ move  ←→ fold  ⏎ open  b branch  esc close\n")
+	if u.busy != "" {
+		b.WriteString(u.busy + "\n")
+	}
 	if u.status != "" {
 		b.WriteString(u.status + "\n")
 	}

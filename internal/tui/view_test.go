@@ -1,8 +1,11 @@
 package tui
 
 import (
+	"errors"
 	"strings"
 	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
 
 	"herdr-tree/internal/adapter"
 	"herdr-tree/internal/tree"
@@ -57,6 +60,78 @@ func TestRenderRowMarksGraft(t *testing.T) {
 	got := renderRow(Row{Node: n, Depth: 2}, false, "", 80)
 	if !strings.Contains(got, "↳") {
 		t.Fatalf("graft marker missing: %q", got)
+	}
+}
+
+// fakeAdapter lets the update loop be tested without Herdr or Claude.
+type fakeAdapter struct{ resumeErr error }
+
+func (f fakeAdapter) Name() string                               { return "fake" }
+func (f fakeAdapter) Discover(string) ([]adapter.Session, error) { return nil, nil }
+func (f fakeAdapter) Current(adapter.Pane) (string, error)       { return "", nil }
+func (f fakeAdapter) Preview(adapter.Session, string) (int, int, int64, error) {
+	return 1, 2, 3, nil
+}
+func (f fakeAdapter) Branch(adapter.Session, string, string) (string, error) { return "new-sid", nil }
+func (f fakeAdapter) Resume(string, string) error                            { return f.resumeErr }
+
+func TestFailedResumeKeepsTheOverlayOpen(t *testing.T) {
+	// Bubble Tea discards its final frame when leaving the alt screen, so a
+	// status set while quitting is never read. A failure must not quit.
+	n := &tree.Node{Node: adapter.Node{ID: "n1", Title: "x"}, SessionID: "sid-a"}
+	u := uiModel{m: New([]*tree.Node{n}), a: fakeAdapter{resumeErr: errors.New("pane split refused")}}
+
+	cmd := resumeCmd(u.a, n)
+	msg, ok := cmd().(actionDoneMsg)
+	if !ok {
+		t.Fatalf("want actionDoneMsg, got %T", cmd())
+	}
+	if msg.quit {
+		t.Fatal("a failed resume must not quit: the message would never be seen")
+	}
+	if !strings.Contains(msg.status, "pane split refused") {
+		t.Fatalf("status does not carry the cause: %q", msg.status)
+	}
+
+	after, _ := u.Update(msg)
+	got := after.(uiModel)
+	if got.quitting {
+		t.Fatal("model marked quitting after a failed resume")
+	}
+	if !strings.Contains(got.View(), "pane split refused") {
+		t.Fatalf("the error is not rendered:\n%s", got.View())
+	}
+}
+
+func TestSuccessfulResumeQuits(t *testing.T) {
+	n := &tree.Node{Node: adapter.Node{ID: "n1", Title: "x"}, SessionID: "sid-a"}
+	u := uiModel{m: New([]*tree.Node{n}), a: fakeAdapter{}}
+
+	msg := resumeCmd(u.a, n)().(actionDoneMsg)
+	if !msg.quit {
+		t.Fatal("a successful resume should close the overlay")
+	}
+	after, cmd := u.Update(msg)
+	if !after.(uiModel).quitting {
+		t.Fatal("want quitting set")
+	}
+	if cmd == nil {
+		t.Fatal("want a quit command")
+	}
+}
+
+func TestKeystrokesAreIgnoredWhileAnActionIsInFlight(t *testing.T) {
+	n := &tree.Node{Node: adapter.Node{ID: "n1", Title: "x"}, SessionID: "sid-a"}
+	u := uiModel{m: New([]*tree.Node{n}), a: fakeAdapter{}, busy: "opening session…"}
+
+	after, _ := u.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'b'}})
+	if after.(uiModel).confirm != "" {
+		t.Fatal("a keystroke started a second action while one was in flight")
+	}
+	// but ctrl+c must always work
+	after2, cmd := u.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if !after2.(uiModel).quitting || cmd == nil {
+		t.Fatal("ctrl+c must not be swallowed while busy")
 	}
 }
 
