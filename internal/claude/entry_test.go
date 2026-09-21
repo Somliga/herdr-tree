@@ -3,11 +3,13 @@ package claude
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
 func TestParseFileReadsEveryLine(t *testing.T) {
-	es, err := ParseFile("testdata/simple.jsonl")
+	es, _, err := ParseFile("testdata/simple.jsonl")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -35,7 +37,7 @@ func TestParseFileReadsEveryLine(t *testing.T) {
 }
 
 func TestTextExtraction(t *testing.T) {
-	es, _ := ParseFile("testdata/simple.jsonl")
+	es, _, _ := ParseFile("testdata/simple.jsonl")
 	if got := es[0].Text(); got != "first question" {
 		t.Fatalf("got %q", got)
 	}
@@ -44,8 +46,39 @@ func TestTextExtraction(t *testing.T) {
 	}
 }
 
+func TestParseFileCountsSkippedLines(t *testing.T) {
+	dir := t.TempDir()
+	good := `{"type":"user","uuid":"u1"}`
+	path := filepath.Join(dir, "s.jsonl")
+	// one good line, one truncated mid-write, one that is not an object
+	body := good + "\n" + `{"type":"user","uuid":` + "\nnot json\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	es, skipped, err := ParseFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(es) != 1 {
+		t.Fatalf("entries %d want 1", len(es))
+	}
+	if skipped != 2 {
+		t.Fatalf("skipped %d want 2 — callers rely on this to tell a partial transcript from a clean one", skipped)
+	}
+}
+
+func TestParseFileReportsZeroSkippedForCleanFile(t *testing.T) {
+	_, skipped, err := ParseFile("testdata/simple.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if skipped != 0 {
+		t.Fatalf("clean fixture reported %d skipped lines", skipped)
+	}
+}
+
 func TestRoundTripPreservesUnknownFields(t *testing.T) {
-	es, _ := ParseFile("testdata/simple.jsonl")
+	es, _, _ := ParseFile("testdata/simple.jsonl")
 	b, err := Marshal(es[3]) // the attachment entry
 	if err != nil {
 		t.Fatal(err)

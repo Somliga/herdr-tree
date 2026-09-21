@@ -109,13 +109,17 @@ func parseLine(line []byte) (Entry, error) {
 // Marshal re-encodes an entry. json.Number keeps integers byte-identical.
 func Marshal(e Entry) ([]byte, error) { return json.Marshal(e.Raw) }
 
-// ParseFile reads a transcript, skipping lines that are not JSON objects.
-// A malformed line is skipped rather than failing the whole session: a
-// partially written transcript should still render.
-func ParseFile(path string) ([]Entry, error) {
+// ParseFile reads a transcript. A malformed line is skipped rather than
+// failing the whole session, because a transcript being written right now is
+// legitimately truncated mid-line. The count of skipped lines is returned so
+// callers can tell "still being written" from "corrupt": Discover marks such
+// a session Broken, and Graft refuses it outright, because a dropped line can
+// break the parentUuid chain and silently produce a graft with the wrong
+// history.
+func ParseFile(path string) (entries []Entry, skipped int, err error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer f.Close()
 
@@ -124,14 +128,19 @@ func ParseFile(path string) ([]Entry, error) {
 	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024) // entries can be large
 	for sc.Scan() {
 		line := bytes.TrimSpace(sc.Bytes())
-		if len(line) == 0 || line[0] != '{' {
+		if len(line) == 0 {
 			continue
 		}
-		e, err := parseLine(line)
-		if err != nil {
+		if line[0] != '{' {
+			skipped++
+			continue
+		}
+		e, perr := parseLine(line)
+		if perr != nil {
+			skipped++
 			continue
 		}
 		out = append(out, e)
 	}
-	return out, sc.Err()
+	return out, skipped, sc.Err()
 }
