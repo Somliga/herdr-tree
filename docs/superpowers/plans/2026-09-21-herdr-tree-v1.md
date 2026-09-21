@@ -1318,6 +1318,7 @@ package claude
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -1410,6 +1411,75 @@ func TestGraftRefusesPartialTranscript(t *testing.T) {
 	}
 }
 
+func TestGraftDropsSessionScopedBookkeeping(t *testing.T) {
+	projects := t.TempDir()
+	t.Setenv("CLAUDE_PROJECTS_DIR", projects)
+	src := filepath.Join(t.TempDir(), "s.jsonl")
+	good, err := os.ReadFile("testdata/simple.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Entry types that really occur, each carrying state that belongs to the
+	// session being branched FROM.
+	extra := strings.Join([]string{
+		`{"type":"mode","mode":"bypassPermissions","sessionId":"S"}`,
+		`{"type":"permission-mode","permissionMode":"bypassPermissions","sessionId":"S"}`,
+		`{"type":"queue-operation","operation":"add","content":"a queued prompt from the old session","sessionId":"S"}`,
+		`{"type":"relocated","relocatedCwd":"/old/worktree","sessionId":"S"}`,
+		`{"type":"file-history-snapshot","messageId":"m1","snapshot":{}}`,
+	}, "\n") + "\n"
+	if err := os.WriteFile(src, append(good, []byte(extra)...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, dst, err := Graft(src, "u3", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, leak := range []string{
+		"bypassPermissions",
+		"a queued prompt from the old session",
+		"/old/worktree",
+		"file-history-snapshot",
+	} {
+		if strings.Contains(string(b), leak) {
+			t.Fatalf("old-session state leaked into the graft: %q", leak)
+		}
+	}
+	es, _, err := ParseFile(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range es {
+		if e.UUID() == "" && e.Type() != "last-prompt" {
+			t.Fatalf("uuid-less %q entry carried into the new session", e.Type())
+		}
+	}
+}
+
+func TestGraftRefusesVersionMismatchAfterTheFirstEntry(t *testing.T) {
+	projects := t.TempDir()
+	t.Setenv("CLAUDE_PROJECTS_DIR", projects)
+	src := filepath.Join(t.TempDir(), "s.jsonl")
+	good, err := os.ReadFile("testdata/simple.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The fixture's FIRST entry is 2.1.278, so a first-entry-wins check would
+	// accept this file. A transcript spanning an upgrade must be refused.
+	later := []byte(`{"type":"user","uuid":"u9","parentUuid":"u3","sessionId":"S","cwd":"/repo","version":"99.0.0","message":{"role":"user","content":[{"type":"text","text":"later"}]}}` + "\n")
+	if err := os.WriteFile(src, append(good, later...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := Graft(src, "u3", t.TempDir()); err != ErrUnsupportedVersion {
+		t.Fatalf("got %v want ErrUnsupportedVersion", err)
+	}
+}
+
 func TestGraftRefusesUnknownFormatVersion(t *testing.T) {
 	projects := t.TempDir()
 	t.Setenv("CLAUDE_PROJECTS_DIR", projects)
@@ -1462,14 +1532,6 @@ var ErrPartialTranscript = errors.New("source transcript has unparseable lines")
 // verifiedMajorMinor is the format this adapter was validated against.
 const verifiedMajorMinor = "2.1"
 
-// droppedTypes are session-scoped bookkeeping entries that must not be
-// copied into a new session.
-var droppedTypes = map[string]bool{
-	"last-prompt": true,
-	"ai-title":    true,
-	"cost-state":  true,
-}
-
 func checkVersion(es []Entry) error {
 	for _, e := range es {
 		v := e.Version()
@@ -1480,7 +1542,10 @@ func checkVersion(es []Entry) error {
 		if len(parts) < 2 || parts[0]+"."+parts[1] != verifiedMajorMinor {
 			return ErrUnsupportedVersion
 		}
-		return nil
+		// Keep scanning. A transcript can span a Claude Code upgrade, and
+		// returning on the first versioned entry would accept a file whose
+		// later entries use a format this adapter has never been validated
+		// against.
 	}
 	return nil // no version stamped anywhere: nothing to disagree with
 }
@@ -1536,7 +1601,9 @@ func Graft(srcPath, atNode, dstCWD string) (newSessionID, dstPath string, err er
 		if u == "" && droppedTypes[e.Type()] {
 			continue
 		}
-		// Copy the map so the source entries stay untouched.
+		// Shallow copy, so the source entries stay untouched. Only top-level
+		// keys are rewritten below; nested maps (message, attachment,
+		// toolUseResult) still alias the source, so never mutate inside them.
 		m := make(map[string]any, len(e.Raw))
 		for k, v := range e.Raw {
 			m[k] = v
