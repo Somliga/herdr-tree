@@ -4093,14 +4093,23 @@ func (m *Model) Rows() []Row {
 				return
 			}
 		}
-		// A hidden node does not hide its children: descend at the same depth
-		// so a labelled turn deep in a session still appears, rather than
-		// disappearing with its parents.
-		next := depth
-		if shown {
-			next = depth + 1
-		}
+		// Indent only where the tree actually branches — at a graft edge.
+		//
+		// A session's turns are a PATH, not a hierarchy: turn 40 is not
+		// "inside" turn 39. Indenting per chain step made depth equal the turn
+		// number, so a real 111-turn session here pushed its last row 220
+		// columns to the right and off the screen entirely. Every mockup in
+		// the spec was a four-turn illustration, which hid it completely.
+		//
+		// A child in the SAME session renders at its parent's depth. A child
+		// starting a DIFFERENT session — which only happens via a graft edge —
+		// is the one thing that earns an indent. A hidden node still does not
+		// hide its children.
 		for _, c := range n.Children {
+			next := depth
+			if shown && c.SessionID != n.SessionID {
+				next = depth + 1
+			}
 			walk(c, next)
 		}
 	}
