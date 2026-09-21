@@ -3495,6 +3495,7 @@ package tui
 
 import (
 	"testing"
+	"time"
 
 	"herdr-tree/internal/adapter"
 	"herdr-tree/internal/tree"
@@ -3577,6 +3578,27 @@ func TestFoldOnLeafMovesToParent(t *testing.T) {
 	}
 }
 
+func TestCyclicTreeDoesNotCrashOrHang(t *testing.T) {
+	// A hand-edited or corrupted tree.json can express mutually-nesting graft
+	// edges. New()'s recursive walk would overflow the stack — a fatal error
+	// that kills the process — and Rows() would loop forever.
+	a := &tree.Node{Node: adapter.Node{ID: "a", Title: "A"}, SessionID: "s1"}
+	b := &tree.Node{Node: adapter.Node{ID: "b", Title: "B"}, SessionID: "s2"}
+	a.Children = append(a.Children, b)
+	b.Children = append(b.Children, a)
+
+	done := make(chan int, 1)
+	go func() { done <- len(New([]*tree.Node{a}).Rows()) }()
+	select {
+	case n := <-done:
+		if n == 0 {
+			t.Fatal("want at least the reachable nodes")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("cyclic tree hangs: the overlay would freeze with no error")
+	}
+}
+
 func TestSelectedTracksCursor(t *testing.T) {
 	m := New([]*tree.Node{chain("n1", "n2")})
 	m.Down()
@@ -3627,11 +3649,22 @@ type Model struct {
 	parent map[*tree.Node]*tree.Node
 }
 
+// New indexes each node's parent so Fold can jump upward.
+//
+// The "already seen" check is the same cycle defence as Rows(), and it is
+// needed here for a harsher reason: an unguarded recursive walk over a cyclic
+// tree overflows the stack, and a Go stack overflow is a fatal error that no
+// recover can catch. That kills the plugin process outright rather than
+// merely freezing the view. Graft edges live in a plain JSON file that can be
+// hand-edited or corrupted into a cycle, so this is reachable.
 func New(roots []*tree.Node) *Model {
 	m := &Model{Roots: roots, Folded: map[*tree.Node]bool{}, parent: map[*tree.Node]*tree.Node{}}
 	var walk func(n *tree.Node)
 	walk = func(n *tree.Node) {
 		for _, c := range n.Children {
+			if _, seen := m.parent[c]; seen {
+				continue
+			}
 			m.parent[c] = n
 			walk(c)
 		}
