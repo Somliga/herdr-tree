@@ -149,6 +149,10 @@ TUI shows, and in v1.1 they name the artifact directory. Only grafted
 sessions have an entry here — a session discovered from a transcript but
 never branched has no store record at all, and needs none.
 
+`Save` merges on write rather than overwriting: two panes can each branch and
+both edges survive. v1 never deletes a branch, so a merge cannot resurrect
+something intentionally removed.
+
 Private, not in the repo: one tree.json is shared by all worktrees of a repo,
 so it never conflicts and never needs gitignoring. Artifacts go in the repo
 (v1.1) because those are yours to review and commit.
@@ -312,7 +316,7 @@ transcript unparseable; graft edge whose child file is gone.
 | Transcript unparseable / format changed | `⚠` row; branch refused on that node; rest of tree fine |
 | Source session file deleted | Graft edge becomes a tombstone; children still render |
 | `herdr agent start` fails after graft | Orphan session stays on disk, appears as a root. Not deleted — it is valid user data |
-| Two panes writing tree.json | Atomic tmp+rename, last writer wins |
+| Two panes writing tree.json | Save re-reads and merges, then atomic tmp+rename. A plain last-writer-wins would silently discard a branch the other pane just created |
 | tree.json corrupt | Back up, start fresh. Only graft edges lost |
 | Pane runs a non-Claude agent | "No adapter for codex" |
 

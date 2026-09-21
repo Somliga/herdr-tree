@@ -1770,6 +1770,74 @@ func TestDifferentReposDoNotShareAFile(t *testing.T) {
 	}
 }
 
+func TestSaveRefusesAStoreThatDidNotComeFromLoad(t *testing.T) {
+	t.Setenv("HERDR_PLUGIN_CONFIG_DIR", t.TempDir())
+	s := &Store{Version: 1, RepoRoot: "/repo", Branches: map[string]Branch{}}
+	if err := s.Save(); err != ErrNoPath {
+		t.Fatalf("got %v want ErrNoPath — otherwise Save writes tree.json into the process cwd", err)
+	}
+	if _, err := os.Stat("tree.json"); err == nil {
+		os.Remove("tree.json")
+		t.Fatal("Save wrote tree.json into the working directory")
+	}
+}
+
+func TestConcurrentSavesKeepBothBranches(t *testing.T) {
+	t.Setenv("HERDR_PLUGIN_CONFIG_DIR", t.TempDir())
+
+	// Two panes each Load the same store...
+	paneA, _ := Load("/repo")
+	paneB, _ := Load("/repo")
+
+	// ...each branches from a different turn...
+	paneA.Add("session-a", Branch{GraftedFrom: From{SessionID: "src", Node: "u1"}})
+	paneB.Add("session-b", Branch{GraftedFrom: From{SessionID: "src", Node: "u3"}})
+
+	// ...and both save.
+	if err := paneA.Save(); err != nil {
+		t.Fatal(err)
+	}
+	if err := paneB.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	final, err := Load("/repo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := final.Branches["session-a"]; !ok {
+		t.Fatal("pane A's branch was silently discarded by pane B's save")
+	}
+	if _, ok := final.Branches["session-b"]; !ok {
+		t.Fatal("pane B's branch is missing")
+	}
+}
+
+func TestSuccessiveCorruptionsAreBothPreserved(t *testing.T) {
+	cfg := t.TempDir()
+	t.Setenv("HERDR_PLUGIN_CONFIG_DIR", cfg)
+	s, _ := Load("/repo")
+	dir := filepath.Dir(s.path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := os.WriteFile(s.path, []byte("{{{ not json"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load("/repo"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	m, err := filepath.Glob(filepath.Join(dir, "tree.json.corrupt.*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m) != 2 {
+		t.Fatalf("got %d corrupt backups want 2 — a second corruption must not overwrite the first", len(m))
+	}
+}
+
 func TestCorruptStoreIsBackedUpNotFatal(t *testing.T) {
 	cfg := t.TempDir()
 	t.Setenv("HERDR_PLUGIN_CONFIG_DIR", cfg)
@@ -1788,7 +1856,11 @@ func TestCorruptStoreIsBackedUpNotFatal(t *testing.T) {
 	if len(again.Branches) != 0 {
 		t.Fatal("want empty store")
 	}
-	if _, err := os.Stat(s.path + ".corrupt"); err != nil {
+	m, err := filepath.Glob(s.path + ".corrupt.*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m) != 1 {
 		t.Fatal("corrupt file was not preserved as a backup")
 	}
 }
@@ -1813,6 +1885,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1847,7 +1921,10 @@ func Dir() string {
 	}
 	out, err := exec.Command("herdr", "plugin", "config-dir", "herdr-tree").Output()
 	if err == nil {
-		if d := strings.TrimSpace(string(out)); d != "" {
+		// Only accept something that looks like a path. A zero exit with a
+		// warning or a diagnostic on stdout must fall through to the default,
+		// not become the config directory.
+		if d := strings.TrimSpace(string(out)); filepath.IsAbs(d) {
 			return d
 		}
 	}
@@ -1876,7 +1953,11 @@ func Load(repoRoot string) (*Store, error) {
 	}
 	var loaded Store
 	if err := json.Unmarshal(b, &loaded); err != nil {
-		_ = os.Rename(p, p+".corrupt")
+		// Timestamped so a second corruption does not overwrite the first.
+		// A failed rename is deliberately ignored: returning a working empty
+		// store matters more than preserving the backup, and the unreadable
+		// file is left in place for the user to inspect.
+		_ = os.Rename(p, fmt.Sprintf("%s.corrupt.%d", p, time.Now().UnixNano()))
 		return s, nil
 	}
 	if loaded.Branches == nil {
@@ -1898,9 +1979,32 @@ func (s *Store) Add(sessionID string, b Branch) {
 	s.Branches[sessionID] = b
 }
 
-// Save writes atomically. Last writer wins if two panes race; only whole
-// graft edges are at stake and they are independent.
+// ErrNoPath means Save was called on a Store that did not come from Load, so
+// it has no file to write to. Without this guard filepath.Dir("") is ".", and
+// Save would silently create tree.json in the process's working directory.
+var ErrNoPath = errors.New("store has no path; use Load to obtain one")
+
+// Save merges this store's branches into whatever is on disk now, then writes
+// atomically.
+//
+// The merge matters: two Herdr panes can each Load, each Add a DIFFERENT
+// branch, and each Save. A plain overwrite would silently discard the branch
+// the other pane just created — and a graft edge is the one piece of data
+// that exists nowhere else, so losing it orphans a real session in the tree.
+// Re-reading first costs one file read and removes the whole race. v1 never
+// deletes a branch, so a merge can never resurrect something intentionally
+// removed.
 func (s *Store) Save() error {
+	if s.path == "" {
+		return ErrNoPath
+	}
+	if onDisk, err := Load(s.RepoRoot); err == nil {
+		for id, b := range onDisk.Branches {
+			if _, ours := s.Branches[id]; !ours {
+				s.Branches[id] = b
+			}
+		}
+	}
 	for id, b := range s.Branches {
 		if b.Artifacts == nil {
 			b.Artifacts = []string{}
