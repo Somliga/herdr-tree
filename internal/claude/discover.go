@@ -119,9 +119,15 @@ func Discover(repoRoot string) ([]adapter.Session, error) {
 	var out []adapter.Session
 	for _, p := range paths {
 		head := headCWD(p)
-		if head == "" || rootOf(head) != repoRoot {
-			continue // belongs elsewhere (or unreadable): skip without a full parse
+		if head != "" && rootOf(head) != repoRoot {
+			continue // definitely another repo: skip without decoding
 		}
+		// head == "" means the bounded head scan told us nothing. Fall through
+		// to a full parse rather than dropping the session: a transcript we
+		// cannot classify cheaply must still be classified, not silently lost.
+		// Measured on 105 real transcripts the first cwd appears by line 6, so
+		// this path is unreachable today — it exists so a format change
+		// degrades to slow, not to wrong.
 		es, skipped, err := ParseFile(p)
 		if err != nil || len(es) == 0 {
 			continue // unreadable: cannot be attributed to any repo

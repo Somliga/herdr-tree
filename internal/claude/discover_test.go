@@ -177,6 +177,53 @@ func TestDiscoverSkipsOtherReposWithoutFullyParsingThem(t *testing.T) {
 	}
 }
 
+func TestDiscoverFindsASessionWhoseCWDIsPastTheHeadScan(t *testing.T) {
+	// headCWD only reads the first 200 lines. A miss there must not be
+	// mistaken for "no cwd anywhere" — Discover must fall through to a full
+	// parse rather than silently dropping the session.
+	projects := t.TempDir()
+	t.Setenv("CLAUDE_PROJECTS_DIR", projects)
+	repoDir := t.TempDir()
+	id := "11111111-1111-4111-8111-111111111111"
+
+	es, _, err := ParseFile("testdata/simple.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(projects, SlugFor(repoDir))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Create(filepath.Join(dir, id+".jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Pad the head with valid JSON lines that carry no cwd, pushing the real
+	// content's first cwd past line 200.
+	for i := 0; i < 210; i++ {
+		if _, err := f.WriteString(`{"type":"mode","mode":"x","sessionId":"S"}` + "\n"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, e := range es {
+		if _, ok := e.Raw["cwd"]; ok {
+			e.Raw["cwd"] = repoDir
+		}
+		e.Raw["sessionId"] = id
+		b, _ := Marshal(e)
+		f.Write(append(b, '\n'))
+	}
+	f.Close()
+
+	got, err := Discover(repoDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].CWD != repoDir {
+		t.Fatalf("a session whose cwd is past the head scan must still be found: got %+v", got)
+	}
+}
+
 func TestDiscoverMarksPartialTranscriptBroken(t *testing.T) {
 	projects := t.TempDir()
 	t.Setenv("CLAUDE_PROJECTS_DIR", projects)
