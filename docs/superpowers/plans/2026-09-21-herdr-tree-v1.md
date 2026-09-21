@@ -2710,6 +2710,11 @@ type Node struct {
 	SessionPath  string
 	SessionTitle string
 	IsSessionRoot bool
+	// IsSessionLeaf marks the LAST turn of a session's own chain. The
+	// "current" marker belongs on exactly one row — where you actually are —
+	// not on every turn of the session, which on a long session tags hundreds
+	// of rows and tells you nothing.
+	IsSessionLeaf bool
 	Grafted       bool // this node starts a session branched from its parent
 	Broken        bool // session present but unreadable or empty
 	Label         string
@@ -2727,7 +2732,8 @@ func Build(sessions []adapter.Session, s *store.Store) []*Node {
 		if len(sess.Nodes) == 0 {
 			n := &Node{
 				SessionID: sess.ID, SessionCWD: sess.CWD, SessionPath: sess.Path,
-				SessionTitle: sess.Title, IsSessionRoot: true, Broken: true,
+				SessionTitle: sess.Title, IsSessionRoot: true, IsSessionLeaf: true,
+				Broken: true,
 			}
 			chains[sess.ID] = n
 			continue
@@ -2737,7 +2743,9 @@ func Build(sessions []adapter.Session, s *store.Store) []*Node {
 			n := &Node{
 				Node: t, SessionID: sess.ID, SessionCWD: sess.CWD,
 				SessionPath: sess.Path, SessionTitle: sess.Title,
-				IsSessionRoot: i == 0, Broken: sess.Broken,
+				IsSessionRoot: i == 0,
+				IsSessionLeaf: i == len(sess.Nodes)-1,
+				Broken:        sess.Broken,
 			}
 			n.Label = s.Labels[store.LabelKey(sess.ID, t.ID)]
 			nodeIndex[sess.ID][t.ID] = n
@@ -4443,7 +4451,7 @@ func renderRow(r Row, selected bool, currentSession string, width int) string {
 	}
 	b.WriteString(title)
 
-	if r.Node.SessionID != "" && r.Node.SessionID == currentSession {
+	if r.Node.IsSessionLeaf && r.Node.SessionID != "" && r.Node.SessionID == currentSession {
 		b.WriteString("   ● current")
 	}
 	line := b.String()
