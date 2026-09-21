@@ -75,12 +75,63 @@ func TestDanglingGraftParentFallsBackToRoot(t *testing.T) {
 	}
 }
 
+func TestGraftParentTurnGoneFallsBackToRoot(t *testing.T) {
+	// The parent session is present and readable, but the specific turn the
+	// branch was taken from is no longer there.
+	st := emptyStore()
+	st.Add("s2", store.Branch{GraftedFrom: store.From{SessionID: "s1", Node: "vanished"}})
+
+	roots := Build([]adapter.Session{sess("s1", "n1", "n2"), sess("s2", "m1")}, st)
+	if len(roots) != 2 {
+		t.Fatalf("want both sessions as roots, got %d: %+v", len(roots), roots)
+	}
+	var sawChild bool
+	for _, r := range roots {
+		if r.SessionID == "s2" && r.Node.ID == "m1" {
+			sawChild = true
+		}
+	}
+	if !sawChild {
+		t.Fatal("a branch whose graft turn vanished must still render as a root, not disappear")
+	}
+}
+
+func TestGraftFromABrokenParentFallsBackToRoot(t *testing.T) {
+	// A parent whose transcript became unreadable has zero turns, so its node
+	// index is empty and the child's graft point cannot be found.
+	st := emptyStore()
+	st.Add("s2", store.Branch{GraftedFrom: store.From{SessionID: "s1", Node: "n1"}})
+
+	broken := adapter.Session{ID: "s1", Title: "t-s1", Broken: true}
+	roots := Build([]adapter.Session{broken, sess("s2", "m1")}, st)
+	if len(roots) != 2 {
+		t.Fatalf("want 2 roots (the broken parent and the orphaned child), got %d: %+v", len(roots), roots)
+	}
+}
+
+func TestGraftEdgeForAMissingSessionIsIgnored(t *testing.T) {
+	// The store remembers a branch whose transcript the user has since deleted.
+	st := emptyStore()
+	st.Add("deleted-session", store.Branch{GraftedFrom: store.From{SessionID: "s1", Node: "n1"}})
+
+	roots := Build([]adapter.Session{sess("s1", "n1", "n2")}, st)
+	if len(roots) != 1 || roots[0].SessionID != "s1" {
+		t.Fatalf("a stale edge must not invent a node: %+v", roots)
+	}
+	if len(roots[0].Children) != 1 || roots[0].Children[0].Node.ID != "n2" {
+		t.Fatalf("the surviving session must be unaffected: %+v", roots[0].Children)
+	}
+}
+
 func TestEmptySessionStillRenders(t *testing.T) {
 	roots := Build([]adapter.Session{sess("s1")}, emptyStore())
 	if len(roots) != 1 {
 		t.Fatalf("roots %d want 1", len(roots))
 	}
-	if !roots[0].Broken && roots[0].Node.ID != "" {
+	if !roots[0].Broken {
+		t.Fatalf("a session with no turns must be marked Broken so it renders as a warning row: %+v", roots[0])
+	}
+	if !roots[0].IsSessionRoot || roots[0].SessionID != "s1" {
 		t.Fatalf("got %+v", roots[0])
 	}
 }
