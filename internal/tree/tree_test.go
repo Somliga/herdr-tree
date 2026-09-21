@@ -76,6 +76,21 @@ func TestDanglingGraftParentFallsBackToRoot(t *testing.T) {
 	}
 }
 
+func TestBuildCarriesTheSessionPath(t *testing.T) {
+	// Without this the TUI rebuilds a Session with no Path, and Preview and
+	// Branch silently fall back to reconstructing it — wrong for any session
+	// that relocated into a worktree.
+	s := sess("s1", "n1", "n2")
+	s.Path = "/somewhere/-odd-project-dir/s1.jsonl"
+	roots := Build([]adapter.Session{s}, emptyStore())
+	if roots[0].SessionPath != s.Path {
+		t.Fatalf("root SessionPath = %q want %q", roots[0].SessionPath, s.Path)
+	}
+	if roots[0].Children[0].SessionPath != s.Path {
+		t.Fatalf("child SessionPath = %q want %q", roots[0].Children[0].SessionPath, s.Path)
+	}
+}
+
 func TestGraftedSiblingsRenderInAStableOrder(t *testing.T) {
 	// Two branches taken from the SAME turn. Map iteration order is randomised
 	// per run, so without explicit ordering these two swap places between

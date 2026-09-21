@@ -10,10 +10,16 @@ import (
 )
 
 type Node struct {
-	Node          adapter.Node
-	SessionID     string
-	SessionCWD    string // the session's own cwd, which may be a worktree
-	SessionTitle  string
+	Node       adapter.Node
+	SessionID  string
+	SessionCWD string // the session's own cwd, which may be a worktree
+	// SessionPath is where the transcript was FOUND. It is carried all the
+	// way to the TUI because a Session rebuilt from a tree node with only an
+	// id and a cwd would fall back to reconstructing the path, which is wrong
+	// for any session that relocated into a worktree — the exact bug this
+	// field exists to prevent.
+	SessionPath  string
+	SessionTitle string
 	IsSessionRoot bool
 	Grafted       bool // this node starts a session branched from its parent
 	Broken        bool // session present but unreadable or empty
@@ -30,7 +36,7 @@ func Build(sessions []adapter.Session, s *store.Store) []*Node {
 		nodeIndex[sess.ID] = map[string]*Node{}
 		if len(sess.Nodes) == 0 {
 			n := &Node{
-				SessionID: sess.ID, SessionCWD: sess.CWD, SessionTitle: sess.Title,
+				SessionID: sess.ID, SessionCWD: sess.CWD, SessionPath: sess.Path, SessionTitle: sess.Title,
 				IsSessionRoot: true, Broken: true,
 			}
 			chains[sess.ID] = n
@@ -39,7 +45,7 @@ func Build(sessions []adapter.Session, s *store.Store) []*Node {
 		var head, prev *Node
 		for i, t := range sess.Nodes {
 			n := &Node{
-				Node: t, SessionID: sess.ID, SessionCWD: sess.CWD,
+				Node: t, SessionID: sess.ID, SessionCWD: sess.CWD, SessionPath: sess.Path,
 				SessionTitle: sess.Title,
 				IsSessionRoot: i == 0, Broken: sess.Broken,
 			}
