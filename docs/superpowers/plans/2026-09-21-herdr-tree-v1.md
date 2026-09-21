@@ -1595,10 +1595,21 @@ func Graft(srcPath, atNode, dstCWD string) (newSessionID, dstPath string, err er
 	var buf []byte
 	for _, e := range es {
 		u := e.UUID()
-		if u != "" && !keep[u] {
+		if u == "" {
+			// Every uuid-less entry is session-scoped bookkeeping: mode,
+			// permission-mode, atis-latch, queue-operation (which carries
+			// queued prompt TEXT), relocated and worktree-state (the old
+			// working directory), file-history-snapshot/delta, the artifact
+			// ledgers (which carry an accountUuid), last-prompt, ai-title,
+			// cost-state. All of it belongs to the session being branched
+			// FROM. A denylist here is default-allow and silently leaks
+			// whatever entry types Claude Code adds next, so drop the lot.
+			// Verified empirically: a graft containing no bookkeeping at all
+			// resumes correctly, and Claude Code writes fresh entries of its
+			// own on resume.
 			continue
 		}
-		if u == "" && droppedTypes[e.Type()] {
+		if !keep[u] {
 			continue
 		}
 		// Shallow copy, so the source entries stay untouched. Only top-level
