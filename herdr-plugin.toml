@@ -1,0 +1,22 @@
+id = "herdr-tree"
+name = "Herdr Agent Tree"
+version = "0.1.0"
+min_herdr_version = "0.9.0"
+description = "Browse this repo's Claude conversation tree and branch from any turn."
+platforms = ["linux", "macos"]
+
+[[build]]
+command = ["go", "build", "-o", "bin/herdr-tree.exe", "./cmd/herdr-tree"]
+
+[[actions]]
+id = "open"
+title = "Agent tree: open"
+description = "Browse and branch this repository's Claude conversation tree."
+contexts = ["pane", "workspace"]
+command = ["./bin/herdr-tree.exe", "open"]
+
+[[panes]]
+id = "tree"
+title = "Agent tree"
+placement = "overlay"
+command = ["./bin/herdr-tree.exe", "pane"]
