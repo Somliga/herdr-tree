@@ -60,6 +60,74 @@ func TestDifferentReposDoNotShareAFile(t *testing.T) {
 	}
 }
 
+func TestSaveRefusesAStoreThatDidNotComeFromLoad(t *testing.T) {
+	t.Setenv("HERDR_PLUGIN_CONFIG_DIR", t.TempDir())
+	s := &Store{Version: 1, RepoRoot: "/repo", Branches: map[string]Branch{}}
+	if err := s.Save(); err != ErrNoPath {
+		t.Fatalf("got %v want ErrNoPath — otherwise Save writes tree.json into the process cwd", err)
+	}
+	if _, err := os.Stat("tree.json"); err == nil {
+		os.Remove("tree.json")
+		t.Fatal("Save wrote tree.json into the working directory")
+	}
+}
+
+func TestConcurrentSavesKeepBothBranches(t *testing.T) {
+	t.Setenv("HERDR_PLUGIN_CONFIG_DIR", t.TempDir())
+
+	// Two panes each Load the same store...
+	paneA, _ := Load("/repo")
+	paneB, _ := Load("/repo")
+
+	// ...each branches from a different turn...
+	paneA.Add("session-a", Branch{GraftedFrom: From{SessionID: "src", Node: "u1"}})
+	paneB.Add("session-b", Branch{GraftedFrom: From{SessionID: "src", Node: "u3"}})
+
+	// ...and both save.
+	if err := paneA.Save(); err != nil {
+		t.Fatal(err)
+	}
+	if err := paneB.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	final, err := Load("/repo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := final.Branches["session-a"]; !ok {
+		t.Fatal("pane A's branch was silently discarded by pane B's save")
+	}
+	if _, ok := final.Branches["session-b"]; !ok {
+		t.Fatal("pane B's branch is missing")
+	}
+}
+
+func TestSuccessiveCorruptionsAreBothPreserved(t *testing.T) {
+	cfg := t.TempDir()
+	t.Setenv("HERDR_PLUGIN_CONFIG_DIR", cfg)
+	s, _ := Load("/repo")
+	dir := filepath.Dir(s.path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := os.WriteFile(s.path, []byte("{{{ not json"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load("/repo"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	m, err := filepath.Glob(filepath.Join(dir, "tree.json.corrupt.*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m) != 2 {
+		t.Fatalf("got %d corrupt backups want 2 — a second corruption must not overwrite the first", len(m))
+	}
+}
+
 func TestCorruptStoreIsBackedUpNotFatal(t *testing.T) {
 	cfg := t.TempDir()
 	t.Setenv("HERDR_PLUGIN_CONFIG_DIR", cfg)
@@ -78,7 +146,11 @@ func TestCorruptStoreIsBackedUpNotFatal(t *testing.T) {
 	if len(again.Branches) != 0 {
 		t.Fatal("want empty store")
 	}
-	if _, err := os.Stat(s.path + ".corrupt"); err != nil {
+	m, err := filepath.Glob(s.path + ".corrupt.*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m) != 1 {
 		t.Fatal("corrupt file was not preserved as a backup")
 	}
 }
