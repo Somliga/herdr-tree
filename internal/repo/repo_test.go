@@ -60,6 +60,47 @@ func TestWorktreeFoldsIntoMainRepo(t *testing.T) {
 	}
 }
 
+func TestRemovedWorktreeStillResolvesToItsRepo(t *testing.T) {
+	main := t.TempDir()
+	git(t, main, "init")
+	if err := os.WriteFile(filepath.Join(main, "f"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, main, "add", "f")
+	git(t, main, "commit", "-m", "init")
+
+	// A worktree inside the repo, then deleted — the everyday case.
+	wt := filepath.Join(main, ".worktrees", "gone")
+	git(t, main, "worktree", "add", "-b", "side", wt)
+	if err := os.RemoveAll(wt); err != nil {
+		t.Fatal(err)
+	}
+
+	got, isGit, err := Root(wt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !isGit {
+		t.Fatal("a removed worktree must still resolve to its repo, or its sessions vanish from the tree")
+	}
+	want, _ := filepath.EvalSymlinks(main)
+	if got != want {
+		t.Fatalf("got %q want %q", got, want)
+	}
+}
+
+func TestRemovedDirOutsideAnyRepoDoesNotMisattribute(t *testing.T) {
+	base := t.TempDir()
+	gone := filepath.Join(base, "never-existed", "deeper")
+	got, isGit, err := Root(gone)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if isGit {
+		t.Fatalf("walked up into a repo that never contained %q: got %q", gone, got)
+	}
+}
+
 func TestNonRepoReturnsDirItself(t *testing.T) {
 	dir := t.TempDir()
 	got, isGit, err := Root(dir)

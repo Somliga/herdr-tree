@@ -76,6 +76,7 @@ func Discover(repoRoot string) ([]adapter.Session, error) {
 			Broken: skipped > 0,
 		})
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Updated.After(out[j].Updated) })
+	// Stable so sessions with identical mtimes keep a deterministic order.
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Updated.After(out[j].Updated) })
 	return out, nil
 }

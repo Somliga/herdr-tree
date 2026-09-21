@@ -119,7 +119,7 @@ func TestDiscoverLeavesCleanSessionUnbroken(t *testing.T) {
 	}
 }
 
-func TestDiscoverMarksUnreadableSessionBroken(t *testing.T) {
+func TestDiscoverExcludesWhollyUnreadableSession(t *testing.T) {
 	projects := t.TempDir()
 	t.Setenv("CLAUDE_PROJECTS_DIR", projects)
 	repoDir := t.TempDir()
