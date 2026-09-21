@@ -2,6 +2,7 @@ package tui
 
 import (
 	"testing"
+	"time"
 
 	"herdr-tree/internal/adapter"
 	"herdr-tree/internal/tree"
@@ -72,6 +73,27 @@ func TestCursorClampsAtEnds(t *testing.T) {
 	m.Down()
 	if m.Cursor != 1 {
 		t.Fatalf("cursor %d want 1", m.Cursor)
+	}
+}
+
+func TestCyclicTreeDoesNotCrashOrHang(t *testing.T) {
+	// A hand-edited or corrupted tree.json can express mutually-nesting graft
+	// edges. New()'s recursive walk would overflow the stack — a fatal error
+	// that kills the process — and Rows() would loop forever.
+	a := &tree.Node{Node: adapter.Node{ID: "a", Title: "A"}, SessionID: "s1"}
+	b := &tree.Node{Node: adapter.Node{ID: "b", Title: "B"}, SessionID: "s2"}
+	a.Children = append(a.Children, b)
+	b.Children = append(b.Children, a)
+
+	done := make(chan int, 1)
+	go func() { done <- len(New([]*tree.Node{a}).Rows()) }()
+	select {
+	case n := <-done:
+		if n == 0 {
+			t.Fatal("want at least the reachable nodes")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("cyclic tree hangs: the overlay would freeze with no error")
 	}
 }
 

@@ -19,11 +19,22 @@ type Model struct {
 	parent map[*tree.Node]*tree.Node
 }
 
+// New indexes each node's parent so Fold can jump upward.
+//
+// The "already seen" check is the same cycle defence as Rows(), and it is
+// needed here for a harsher reason: an unguarded recursive walk over a cyclic
+// tree overflows the stack, and a Go stack overflow is a fatal error that no
+// recover can catch. That kills the plugin process outright rather than
+// merely freezing the view. Graft edges live in a plain JSON file that can be
+// hand-edited or corrupted into a cycle, so this is reachable.
 func New(roots []*tree.Node) *Model {
 	m := &Model{Roots: roots, Folded: map[*tree.Node]bool{}, parent: map[*tree.Node]*tree.Node{}}
 	var walk func(n *tree.Node)
 	walk = func(n *tree.Node) {
 		for _, c := range n.Children {
+			if _, seen := m.parent[c]; seen {
+				continue
+			}
 			m.parent[c] = n
 			walk(c)
 		}
