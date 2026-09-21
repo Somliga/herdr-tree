@@ -860,6 +860,53 @@ func TestDiscoverGroupsByRepoRoot(t *testing.T) {
 	}
 }
 
+func TestDiscoverMarksPartialTranscriptBroken(t *testing.T) {
+	projects := t.TempDir()
+	t.Setenv("CLAUDE_PROJECTS_DIR", projects)
+	repoDir := t.TempDir()
+
+	id := "11111111-1111-4111-8111-111111111111"
+	writeSession(t, projects, id, repoDir)
+
+	// Append a line truncated mid-write, exactly as a transcript being
+	// appended to right now would look.
+	p := filepath.Join(projects, SlugFor(repoDir), id+".jsonl")
+	f, err := os.OpenFile(p, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString(`{"type":"user","uuid":` + "\n"); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+
+	got, err := Discover(repoDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("sessions %d want 1", len(got))
+	}
+	if !got[0].Broken {
+		t.Fatal("a transcript with unparseable lines must be Broken, so the tree shows the warning row instead of rendering a partial conversation as complete")
+	}
+}
+
+func TestDiscoverLeavesCleanSessionUnbroken(t *testing.T) {
+	projects := t.TempDir()
+	t.Setenv("CLAUDE_PROJECTS_DIR", projects)
+	repoDir := t.TempDir()
+	writeSession(t, projects, "11111111-1111-4111-8111-111111111111", repoDir)
+
+	got, err := Discover(repoDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Broken {
+		t.Fatalf("clean session must not be Broken: %+v", got)
+	}
+}
+
 func TestDiscoverMarksUnreadableSessionBroken(t *testing.T) {
 	projects := t.TempDir()
 	t.Setenv("CLAUDE_PROJECTS_DIR", projects)
