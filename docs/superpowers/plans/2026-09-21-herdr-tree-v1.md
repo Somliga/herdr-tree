@@ -4436,10 +4436,27 @@ kept=${3:?a word that should survive}
 pruned=${4:?a word that should NOT survive}
 
 work=$(mktemp -d)
-trap 'rm -rf "$work"' EXIT
+graft=""
+# Clean up BOTH the temp cwd and the session this writes into Claude Code's
+# own store. Without the second part every run leaves a directory behind in
+# ~/.claude/projects and clutters the /resume picker. The file is removed by
+# name and the directory with rmdir, which refuses to touch a non-empty one —
+# safer than rm -rf on a computed path.
+cleanup() {
+  rm -rf "$work"
+  if [ -n "$graft" ]; then
+    rm -f "$graft"
+    rmdir "$(dirname "$graft")" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT
 mkdir -p "$work/cwd"
 
-sid=$(go run ./cmd/graftcheck "$src" "$node" "$work/cwd")
+# graftcheck prints the session id on the first line and the file it wrote on
+# the second, so the cleanup above knows what to remove.
+out=$(go run ./cmd/graftcheck "$src" "$node" "$work/cwd")
+sid=$(printf '%s\n' "$out" | sed -n 1p)
+graft=$(printf '%s\n' "$out" | sed -n 2p)
 echo "grafted session: $sid"
 
 reply=$(cd "$work/cwd" && claude -p --model claude-haiku-4-5-20251001 \
@@ -4488,8 +4505,10 @@ func main() {
 		fmt.Fprintln(os.Stderr, "graft:", err)
 		os.Exit(1)
 	}
+	// Line 1 is the session id, line 2 is the file written. The script reads
+	// both so it can clean up the session afterwards.
 	fmt.Println(sid)
-	fmt.Fprintln(os.Stderr, "wrote", path)
+	fmt.Println(path)
 }
 ```
 
