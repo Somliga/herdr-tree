@@ -2081,6 +2081,7 @@ Create `internal/tree/tree_test.go`:
 package tree
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -2152,6 +2153,40 @@ func TestDanglingGraftParentFallsBackToRoot(t *testing.T) {
 	roots := Build([]adapter.Session{sess("s2", "m1")}, st)
 	if len(roots) != 1 || roots[0].Node.ID != "m1" {
 		t.Fatalf("a session whose parent vanished must still render: %+v", roots)
+	}
+}
+
+func TestGraftedSiblingsRenderInAStableOrder(t *testing.T) {
+	// Two branches taken from the SAME turn. Map iteration order is randomised
+	// per run, so without explicit ordering these two swap places between
+	// launches of a tree the user navigates by position.
+	sessions := []adapter.Session{
+		sess("s1", "n1", "n2"),
+		sess("first", "a1"),
+		sess("second", "b1"),
+	}
+	var seen []string
+	for i := 0; i < 20; i++ {
+		st := emptyStore()
+		st.Add("first", store.Branch{GraftedFrom: store.From{SessionID: "s1", Node: "n1"}})
+		st.Add("second", store.Branch{GraftedFrom: store.From{SessionID: "s1", Node: "n1"}})
+
+		roots := Build(sessions, st)
+		var order []string
+		for _, c := range roots[0].Children {
+			order = append(order, c.SessionID)
+		}
+		got := strings.Join(order, ",")
+		if i == 0 {
+			seen = order
+			continue
+		}
+		if got != strings.Join(seen, ",") {
+			t.Fatalf("grafted sibling order changed between runs: %v then %v", seen, order)
+		}
+	}
+	if len(seen) != 3 {
+		t.Fatalf("want n2 plus both grafted children under n1, got %v", seen)
 	}
 }
 
@@ -2236,6 +2271,8 @@ Create `internal/tree/tree.go`:
 package tree
 
 import (
+	"sort"
+
 	"herdr-tree/internal/adapter"
 	"herdr-tree/internal/store"
 )
@@ -2285,8 +2322,34 @@ func Build(sessions []adapter.Session, s *store.Store) []*Node {
 		chains[sess.ID] = head
 	}
 
+	// Graft edges come out of a map, whose iteration order Go randomises per
+	// run. Attaching in that order would reshuffle grafted siblings under a
+	// turn between launches, and this tree is navigated by position. Order
+	// them the way roots are ordered — by the session list, which arrives
+	// newest-first — so the layout is stable and consistent.
+	position := make(map[string]int, len(sessions))
+	for i, sess := range sessions {
+		position[sess.ID] = i
+	}
+	edges := make([]string, 0, len(s.Branches))
+	for childSID := range s.Branches {
+		edges = append(edges, childSID)
+	}
+	sort.Slice(edges, func(i, j int) bool {
+		pi, oki := position[edges[i]]
+		pj, okj := position[edges[j]]
+		if oki != okj {
+			return oki // sessions we know about come first
+		}
+		if pi != pj {
+			return pi < pj
+		}
+		return edges[i] < edges[j]
+	})
+
 	attached := map[string]bool{}
-	for childSID, br := range s.Branches {
+	for _, childSID := range edges {
+		br := s.Branches[childSID]
 		child, ok := chains[childSID]
 		if !ok {
 			continue // session gone; nothing to attach
@@ -3148,10 +3211,21 @@ func New(roots []*tree.Node) *Model {
 }
 
 // Rows flattens the visible forest depth-first.
+//
+// The visited guard is not theatre: graft edges live in a plain JSON file the
+// user can hand-edit, and a cyclic pair of edges would make this walk run
+// forever — a frozen overlay with no error. Build itself cannot hang (it is a
+// flat pass), so this is the only place the guard is needed. Truncating a
+// corrupt tree beats hanging on one.
 func (m *Model) Rows() []Row {
 	var out []Row
+	visited := map[*tree.Node]bool{}
 	var walk func(n *tree.Node, depth int)
 	walk = func(n *tree.Node, depth int) {
+		if visited[n] {
+			return
+		}
+		visited[n] = true
 		folded := m.Folded[n]
 		out = append(out, Row{
 			Node: n, Depth: depth,
