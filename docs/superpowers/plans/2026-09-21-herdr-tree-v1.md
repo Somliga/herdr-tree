@@ -2077,7 +2077,7 @@ EOF
 
 **Interfaces:**
 - Consumes: nothing.
-- Produces: `store.Store` with `Version int`, `RepoRoot string`, `Branches map[string]Branch`; `store.Branch{GraftedFrom From, Title string, CreatedAt time.Time, Artifacts []string}`; `store.From{SessionID, Node string}`; `store.Dir() string`; `store.Load(repoRoot string) (*Store, error)`; `(*Store).Save() error`; `(*Store).Add(sessionID string, b Branch)`.
+- Produces: `store.Store` with `Version int`, `RepoRoot string`, `Branches map[string]Branch`, `Labels map[string]string`; `store.LabelKey`, `(*Store).SetLabel`; `store.Branch{GraftedFrom From, Title string, CreatedAt time.Time, Artifacts []string}`; `store.From{SessionID, Node string}`; `store.Dir() string`; `store.Load(repoRoot string) (*Store, error)`; `(*Store).Save() error`; `(*Store).Add(sessionID string, b Branch)`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -2286,6 +2286,11 @@ type Store struct {
 	Version  int               `json:"version"`
 	RepoRoot string            `json:"repo_root"`
 	Branches map[string]Branch `json:"branches"`
+	// Labels marks turns the user wants to find again, keyed "<session>:<turn>".
+	// Landmarking a turn is deliberately separate from branching from it: in
+	// practice you notice a point matters before you know whether you will go
+	// back to it, and a label costs nothing while a branch costs a session.
+	Labels map[string]string `json:"labels,omitempty"`
 
 	path string
 }
@@ -2347,6 +2352,23 @@ func Load(repoRoot string) (*Store, error) {
 	return &loaded, nil
 }
 
+// LabelKey identifies a turn for labelling.
+func LabelKey(sessionID, turnID string) string { return sessionID + ":" + turnID }
+
+// SetLabel records or clears a landmark on a turn. An empty text removes it,
+// so the same key toggles.
+func (s *Store) SetLabel(sessionID, turnID, text string) {
+	if s.Labels == nil {
+		s.Labels = map[string]string{}
+	}
+	k := LabelKey(sessionID, turnID)
+	if text == "" {
+		delete(s.Labels, k)
+		return
+	}
+	s.Labels[k] = text
+}
+
 // Add records a graft edge, keyed by the new session's id.
 func (s *Store) Add(sessionID string, b Branch) {
 	if b.Artifacts == nil {
@@ -2378,6 +2400,14 @@ func (s *Store) Save() error {
 		for id, b := range onDisk.Branches {
 			if _, ours := s.Branches[id]; !ours {
 				s.Branches[id] = b
+			}
+		}
+		for k, v := range onDisk.Labels {
+			if s.Labels == nil {
+				s.Labels = map[string]string{}
+			}
+			if _, ours := s.Labels[k]; !ours {
+				s.Labels[k] = v
 			}
 		}
 	}
@@ -2682,6 +2712,7 @@ type Node struct {
 	IsSessionRoot bool
 	Grafted       bool // this node starts a session branched from its parent
 	Broken        bool // session present but unreadable or empty
+	Label         string
 	Children      []*Node
 }
 
@@ -2708,6 +2739,7 @@ func Build(sessions []adapter.Session, s *store.Store) []*Node {
 				SessionPath: sess.Path, SessionTitle: sess.Title,
 				IsSessionRoot: i == 0, Broken: sess.Broken,
 			}
+			n.Label = s.Labels[store.LabelKey(sess.ID, t.ID)]
 			nodeIndex[sess.ID][t.ID] = n
 			if prev == nil {
 				head = n
@@ -3921,12 +3953,82 @@ type Row struct {
 	Folded      bool
 }
 
+// Density is how much of the tree is shown. Cycling it is the answer to a
+// repo with hundreds of sessions: folding hides a subtree you chose, density
+// hides a KIND of row everywhere at once. Borrowed from Pi, whose tree view
+// cycles the same way and which is where this plugin's model came from.
+type Density int
+
+const (
+	DensityAll      Density = iota // every turn
+	DensityLabelled                // only labelled turns, plus session roots
+	DensityRoots                   // one row per session
+)
+
+func (d Density) String() string {
+	switch d {
+	case DensityLabelled:
+		return "labelled"
+	case DensityRoots:
+		return "sessions"
+	default:
+		return "all"
+	}
+}
+
 type Model struct {
-	Roots  []*tree.Node
-	Cursor int
-	Folded map[*tree.Node]bool
+	Roots   []*tree.Node
+	Cursor  int
+	Folded  map[*tree.Node]bool
+	Density Density
 
 	parent map[*tree.Node]*tree.Node
+}
+
+// CycleDensity advances to the next density, keeping the selected node visible
+// where it still can be. A view control that loses your place is worse than no
+// view control.
+func (m *Model) CycleDensity() {
+	was := m.Selected()
+	m.Density = (m.Density + 1) % 3
+	if was == nil {
+		return
+	}
+	for i, r := range m.Rows() {
+		if r.Node == was {
+			m.Cursor = i
+			return
+		}
+	}
+	// the selected row is hidden at this density: fall back to its nearest
+	// visible ancestor rather than jumping to an unrelated row.
+	for n := m.parent[was]; n != nil; n = m.parent[n] {
+		for i, r := range m.Rows() {
+			if r.Node == n {
+				m.Cursor = i
+				return
+			}
+		}
+	}
+	m.Cursor = 0
+	m.clamp()
+}
+
+// visible reports whether a node is shown at the current density. A session
+// root is always shown — hiding one would lose the session entirely, which is
+// the failure this whole design exists to avoid.
+func (m *Model) visible(n *tree.Node) bool {
+	if n.IsSessionRoot {
+		return true
+	}
+	switch m.Density {
+	case DensityRoots:
+		return false
+	case DensityLabelled:
+		return n.Label != ""
+	default:
+		return true
+	}
 }
 
 // New indexes each node's parent so Fold can jump upward.
@@ -3972,16 +4074,26 @@ func (m *Model) Rows() []Row {
 		}
 		visited[n] = true
 		folded := m.Folded[n]
-		out = append(out, Row{
-			Node: n, Depth: depth,
-			HasChildren: len(n.Children) > 0,
-			Folded:      folded,
-		})
-		if folded {
-			return
+		shown := m.visible(n)
+		if shown {
+			out = append(out, Row{
+				Node: n, Depth: depth,
+				HasChildren: len(n.Children) > 0,
+				Folded:      folded,
+			})
+			if folded {
+				return
+			}
+		}
+		// A hidden node does not hide its children: descend at the same depth
+		// so a labelled turn deep in a session still appears, rather than
+		// disappearing with its parents.
+		next := depth
+		if shown {
+			next = depth + 1
 		}
 		for _, c := range n.Children {
-			walk(c, depth+1)
+			walk(c, next)
 		}
 	}
 	for _, r := range m.Roots {
@@ -4322,6 +4434,9 @@ func renderRow(r Row, selected bool, currentSession string, width int) string {
 		b.WriteString("▸ ")
 	}
 
+	if r.Node.Label != "" {
+		b.WriteString("★ " + r.Node.Label + "  ")
+	}
 	title := r.Node.Node.Title
 	if title == "" && r.Node.Broken {
 		title = "transcript unreadable — metadata only"
@@ -4358,6 +4473,9 @@ type uiModel struct {
 	status   string
 	busy     string // non-empty while an adapter call is in flight
 	quitting bool
+
+	labelling *tree.Node // non-nil while typing a label
+	labelText string
 }
 
 // actionDoneMsg carries the result of an adapter call back onto the update
@@ -4448,6 +4566,27 @@ func (u uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return u, nil
 		}
+		if u.labelling != nil {
+			switch msg.Type {
+			case tea.KeyEnter:
+				n := u.labelling
+				u.st.SetLabel(n.SessionID, n.Node.ID, strings.TrimSpace(u.labelText))
+				n.Label = strings.TrimSpace(u.labelText)
+				if err := u.st.Save(); err != nil {
+					u.status = "label not saved: " + err.Error()
+				}
+				u.labelling, u.labelText = nil, ""
+			case tea.KeyEsc:
+				u.labelling, u.labelText = nil, ""
+			case tea.KeyBackspace:
+				if r := []rune(u.labelText); len(r) > 0 {
+					u.labelText = string(r[:len(r)-1])
+				}
+			case tea.KeyRunes, tea.KeySpace:
+				u.labelText += msg.String()
+			}
+			return u, nil
+		}
 		if u.confirm != "" {
 			switch msg.String() {
 			case "enter":
@@ -4482,6 +4621,15 @@ func (u uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			u.busy = "opening session…"
 			return u, resumeCmd(u.a, n, u.dstCWD(n))
+		case "d":
+			u.m.CycleDensity()
+		case "L":
+			n := u.m.Selected()
+			if n == nil || n.Node.ID == "" {
+				return u, nil
+			}
+			u.labelling = n
+			u.labelText = n.Label
 		case "b":
 			if n := u.m.Selected(); n != nil && !n.Broken {
 				src := adapter.Session{ID: n.SessionID, CWD: n.SessionCWD, Path: n.SessionPath}
@@ -4501,6 +4649,10 @@ func (u uiModel) View() string {
 	if u.quitting {
 		return ""
 	}
+	if u.labelling != nil {
+		return fmt.Sprintf("Label this turn:  %s\n\n  %q\n\n[enter] save   [esc] cancel   (empty clears)\n",
+			u.labelText, u.labelling.Node.Title)
+	}
 	if u.confirm != "" {
 		return u.confirm + "\n"
 	}
@@ -4516,7 +4668,7 @@ func (u uiModel) View() string {
 		}
 		b.WriteString(marker + renderRow(r, i == u.m.Cursor, u.current, u.width-2) + "\n")
 	}
-	b.WriteString("\n↑↓ move  ←→ fold  ⏎ open  b branch  esc close\n")
+	b.WriteString(fmt.Sprintf("\n↑↓ move  ←→ fold  ⏎ open  b branch  L label  d density:%s  esc close\n", u.m.Density))
 	if u.busy != "" {
 		b.WriteString(u.busy + "\n")
 	}
