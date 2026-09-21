@@ -2252,6 +2252,21 @@ func TestDanglingGraftParentFallsBackToRoot(t *testing.T) {
 	}
 }
 
+func TestBuildCarriesTheSessionPath(t *testing.T) {
+	// Without this the TUI rebuilds a Session with no Path, and Preview and
+	// Branch silently fall back to reconstructing it — wrong for any session
+	// that relocated into a worktree.
+	s := sess("s1", "n1", "n2")
+	s.Path = "/somewhere/-odd-project-dir/s1.jsonl"
+	roots := Build([]adapter.Session{s}, emptyStore())
+	if roots[0].SessionPath != s.Path {
+		t.Fatalf("root SessionPath = %q want %q", roots[0].SessionPath, s.Path)
+	}
+	if roots[0].Children[0].SessionPath != s.Path {
+		t.Fatalf("child SessionPath = %q want %q", roots[0].Children[0].SessionPath, s.Path)
+	}
+}
+
 func TestGraftedSiblingsRenderInAStableOrder(t *testing.T) {
 	// Two branches taken from the SAME turn. Map iteration order is randomised
 	// per run, so without explicit ordering these two swap places between
@@ -2374,10 +2389,16 @@ import (
 )
 
 type Node struct {
-	Node          adapter.Node
-	SessionID     string
-	SessionCWD    string // the session's own cwd, which may be a worktree
-	SessionTitle  string
+	Node       adapter.Node
+	SessionID  string
+	SessionCWD string // the session's own cwd, which may be a worktree
+	// SessionPath is where the transcript was FOUND. It is carried all the
+	// way to the TUI because a Session rebuilt from a tree node with only an
+	// id and a cwd would fall back to reconstructing the path, which is wrong
+	// for any session that relocated into a worktree — the exact bug this
+	// field exists to prevent.
+	SessionPath  string
+	SessionTitle string
 	IsSessionRoot bool
 	Grafted       bool // this node starts a session branched from its parent
 	Broken        bool // session present but unreadable or empty
@@ -2394,8 +2415,8 @@ func Build(sessions []adapter.Session, s *store.Store) []*Node {
 		nodeIndex[sess.ID] = map[string]*Node{}
 		if len(sess.Nodes) == 0 {
 			n := &Node{
-				SessionID: sess.ID, SessionCWD: sess.CWD, SessionTitle: sess.Title,
-				IsSessionRoot: true, Broken: true,
+				SessionID: sess.ID, SessionCWD: sess.CWD, SessionPath: sess.Path,
+				SessionTitle: sess.Title, IsSessionRoot: true, Broken: true,
 			}
 			chains[sess.ID] = n
 			continue
@@ -2404,7 +2425,7 @@ func Build(sessions []adapter.Session, s *store.Store) []*Node {
 		for i, t := range sess.Nodes {
 			n := &Node{
 				Node: t, SessionID: sess.ID, SessionCWD: sess.CWD,
-				SessionTitle: sess.Title,
+				SessionPath: sess.Path, SessionTitle: sess.Title,
 				IsSessionRoot: i == 0, Broken: sess.Broken,
 			}
 			nodeIndex[sess.ID][t.ID] = n
@@ -3964,7 +3985,7 @@ func (u uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return u, tea.Quit
 		case "b":
 			if n := u.m.Selected(); n != nil && !n.Broken {
-				src := adapter.Session{ID: n.SessionID, CWD: n.SessionCWD}
+				src := adapter.Session{ID: n.SessionID, CWD: n.SessionCWD, Path: n.SessionPath}
 				turns, entries, size, err := u.a.Preview(src, n.Node.ID)
 				if err != nil {
 					u.status = "cannot branch here: " + err.Error()
@@ -3993,7 +4014,7 @@ func (u *uiModel) doBranch() string {
 	if n == nil {
 		return ""
 	}
-	src := adapter.Session{ID: n.SessionID, CWD: n.SessionCWD}
+	src := adapter.Session{ID: n.SessionID, CWD: n.SessionCWD, Path: n.SessionPath}
 	sid, err := u.a.Branch(src, n.Node.ID, n.SessionCWD)
 	if err != nil {
 		return "branch failed: " + err.Error()
