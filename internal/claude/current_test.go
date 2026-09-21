@@ -68,6 +68,53 @@ func TestAmbiguityResolvedByHerdrHint(t *testing.T) {
 	}
 }
 
+func TestCurrentRefusesAPaneWithNoCWD(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CLAUDE_SESSIONS_DIR", dir)
+	// Exactly one session running anywhere: the tempting case to "just pick it".
+	writeReg(t, dir, "1", "some-sid", "/somewhere/else", "interactive")
+
+	if _, err := Current(adapter.Pane{CWD: ""}); err != ErrUnknownCWD {
+		t.Fatalf("got %v want ErrUnknownCWD — an unknown pane directory must not match every session", err)
+	}
+}
+
+func TestCurrentMatchesThroughASymlink(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CLAUDE_SESSIONS_DIR", dir)
+
+	real := t.TempDir()
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	// Claude recorded the real path; Herdr reports the pane through the link.
+	writeReg(t, dir, "1", "the-sid", real, "interactive")
+
+	got, err := Current(adapter.Pane{CWD: link})
+	if err != nil {
+		t.Fatalf("symlinked pane cwd should still match: %v", err)
+	}
+	if got != "the-sid" {
+		t.Fatalf("got %q want the-sid", got)
+	}
+}
+
+func TestCurrentToleratesATrailingSlash(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CLAUDE_SESSIONS_DIR", dir)
+	repoDir := t.TempDir()
+	writeReg(t, dir, "1", "the-sid", repoDir, "interactive")
+
+	got, err := Current(adapter.Pane{CWD: repoDir + "/"})
+	if err != nil {
+		t.Fatalf("trailing slash should not break the match: %v", err)
+	}
+	if got != "the-sid" {
+		t.Fatalf("got %q want the-sid", got)
+	}
+}
+
 func TestAmbiguityWithoutUsableHintIsAnError(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("CLAUDE_SESSIONS_DIR", dir)
