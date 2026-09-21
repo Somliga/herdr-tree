@@ -3816,8 +3816,11 @@ Create `internal/tui/view_test.go`:
 package tui
 
 import (
+	"errors"
 	"strings"
 	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
 
 	"herdr-tree/internal/adapter"
 	"herdr-tree/internal/tree"
@@ -3872,6 +3875,78 @@ func TestRenderRowMarksGraft(t *testing.T) {
 	got := renderRow(Row{Node: n, Depth: 2}, false, "", 80)
 	if !strings.Contains(got, "↳") {
 		t.Fatalf("graft marker missing: %q", got)
+	}
+}
+
+// fakeAdapter lets the update loop be tested without Herdr or Claude.
+type fakeAdapter struct{ resumeErr error }
+
+func (f fakeAdapter) Name() string                                  { return "fake" }
+func (f fakeAdapter) Discover(string) ([]adapter.Session, error)    { return nil, nil }
+func (f fakeAdapter) Current(adapter.Pane) (string, error)          { return "", nil }
+func (f fakeAdapter) Preview(adapter.Session, string) (int, int, int64, error) {
+	return 1, 2, 3, nil
+}
+func (f fakeAdapter) Branch(adapter.Session, string, string) (string, error) { return "new-sid", nil }
+func (f fakeAdapter) Resume(string, string) error                            { return f.resumeErr }
+
+func TestFailedResumeKeepsTheOverlayOpen(t *testing.T) {
+	// Bubble Tea discards its final frame when leaving the alt screen, so a
+	// status set while quitting is never read. A failure must not quit.
+	n := &tree.Node{Node: adapter.Node{ID: "n1", Title: "x"}, SessionID: "sid-a"}
+	u := uiModel{m: New([]*tree.Node{n}), a: fakeAdapter{resumeErr: errors.New("pane split refused")}}
+
+	cmd := resumeCmd(u.a, n)
+	msg, ok := cmd().(actionDoneMsg)
+	if !ok {
+		t.Fatalf("want actionDoneMsg, got %T", cmd())
+	}
+	if msg.quit {
+		t.Fatal("a failed resume must not quit: the message would never be seen")
+	}
+	if !strings.Contains(msg.status, "pane split refused") {
+		t.Fatalf("status does not carry the cause: %q", msg.status)
+	}
+
+	after, _ := u.Update(msg)
+	got := after.(uiModel)
+	if got.quitting {
+		t.Fatal("model marked quitting after a failed resume")
+	}
+	if !strings.Contains(got.View(), "pane split refused") {
+		t.Fatalf("the error is not rendered:\n%s", got.View())
+	}
+}
+
+func TestSuccessfulResumeQuits(t *testing.T) {
+	n := &tree.Node{Node: adapter.Node{ID: "n1", Title: "x"}, SessionID: "sid-a"}
+	u := uiModel{m: New([]*tree.Node{n}), a: fakeAdapter{}}
+
+	msg := resumeCmd(u.a, n)().(actionDoneMsg)
+	if !msg.quit {
+		t.Fatal("a successful resume should close the overlay")
+	}
+	after, cmd := u.Update(msg)
+	if !after.(uiModel).quitting {
+		t.Fatal("want quitting set")
+	}
+	if cmd == nil {
+		t.Fatal("want a quit command")
+	}
+}
+
+func TestKeystrokesAreIgnoredWhileAnActionIsInFlight(t *testing.T) {
+	n := &tree.Node{Node: adapter.Node{ID: "n1", Title: "x"}, SessionID: "sid-a"}
+	u := uiModel{m: New([]*tree.Node{n}), a: fakeAdapter{}, busy: "opening session…"}
+
+	after, _ := u.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'b'}})
+	if after.(uiModel).confirm != "" {
+		t.Fatal("a keystroke started a second action while one was in flight")
+	}
+	// but ctrl+c must always work
+	after2, cmd := u.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if !after2.(uiModel).quitting || cmd == nil {
+		t.Fatal("ctrl+c must not be swallowed while busy")
 	}
 }
 
@@ -3981,7 +4056,58 @@ type uiModel struct {
 	height   int
 	confirm  string
 	status   string
+	busy     string // non-empty while an adapter call is in flight
 	quitting bool
+}
+
+// actionDoneMsg carries the result of an adapter call back onto the update
+// loop. `quit` is set only when the action succeeded — a failure must leave
+// the overlay open, because Bubble Tea paints its final frame into the alt
+// screen and then discards it on exit, so a message shown while quitting is
+// never actually read by anyone.
+type actionDoneMsg struct {
+	status string
+	quit   bool
+}
+
+// resumeCmd and branchCmd run OFF the update loop.
+//
+// herdr's `agent start` waits for the agent to become ready and is bounded at
+// 45 seconds. Doing that inside Update freezes every keystroke for the whole
+// duration with no feedback and no way to cancel, because Bubble Tea handles
+// one message at a time. As a tea.Cmd the work happens on its own goroutine
+// and the overlay keeps rendering.
+func resumeCmd(a adapter.Adapter, n *tree.Node) tea.Cmd {
+	return func() tea.Msg {
+		if err := a.Resume(n.SessionID, n.SessionCWD); err != nil {
+			return actionDoneMsg{status: "could not open session: " + err.Error()}
+		}
+		return actionDoneMsg{status: "opened " + shortID(n.SessionID), quit: true}
+	}
+}
+
+func branchCmd(a adapter.Adapter, st *store.Store, n *tree.Node) tea.Cmd {
+	return func() tea.Msg {
+		src := adapter.Session{ID: n.SessionID, CWD: n.SessionCWD, Path: n.SessionPath}
+		sid, err := a.Branch(src, n.Node.ID, n.SessionCWD)
+		if err != nil {
+			return actionDoneMsg{status: "branch failed: " + err.Error()}
+		}
+		// Record the edge before resuming: the transcript now exists, so the
+		// branch must survive even if opening it fails.
+		st.Add(sid, store.Branch{
+			GraftedFrom: store.From{SessionID: n.SessionID, Node: n.Node.ID},
+			Title:       n.Node.Title,
+			CreatedAt:   time.Now().UTC(),
+		})
+		if err := st.Save(); err != nil {
+			return actionDoneMsg{status: "branched " + shortID(sid) + ", but the tree was not saved: " + err.Error()}
+		}
+		if err := a.Resume(sid, n.SessionCWD); err != nil {
+			return actionDoneMsg{status: "branched " + shortID(sid) + ", but it did not open: " + err.Error()}
+		}
+		return actionDoneMsg{status: "branched " + shortID(sid), quit: true}
+	}
 }
 
 func (u uiModel) Init() tea.Cmd { return nil }
@@ -3990,12 +4116,34 @@ func (u uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		u.width, u.height = msg.Width, msg.Height
+	case actionDoneMsg:
+		u.busy = ""
+		u.status = msg.status
+		if msg.quit {
+			u.quitting = true
+			return u, tea.Quit
+		}
+		return u, nil
 	case tea.KeyMsg:
+		if u.busy != "" {
+			// An adapter call is in flight. Swallow input rather than queueing
+			// a second one, but never trap the user.
+			if msg.String() == "ctrl+c" {
+				u.quitting = true
+				return u, tea.Quit
+			}
+			return u, nil
+		}
 		if u.confirm != "" {
 			switch msg.String() {
 			case "enter":
-				u.status = u.doBranch()
+				n := u.m.Selected()
 				u.confirm = ""
+				if n == nil {
+					return u, nil
+				}
+				u.busy = "branching…"
+				return u, branchCmd(u.a, u.st, n)
 			case "esc", "q":
 				u.confirm = ""
 			}
@@ -4014,8 +4162,12 @@ func (u uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "right", "l":
 			u.m.Unfold()
 		case "enter":
-			u.status = u.doResume()
-			return u, tea.Quit
+			n := u.m.Selected()
+			if n == nil {
+				return u, nil
+			}
+			u.busy = "opening session…"
+			return u, resumeCmd(u.a, n)
 		case "b":
 			if n := u.m.Selected(); n != nil && !n.Broken {
 				src := adapter.Session{ID: n.SessionID, CWD: n.SessionCWD, Path: n.SessionPath}
@@ -4029,41 +4181,6 @@ func (u uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return u, nil
-}
-
-func (u *uiModel) doResume() string {
-	n := u.m.Selected()
-	if n == nil {
-		return ""
-	}
-	if err := u.a.Resume(n.SessionID, n.SessionCWD); err != nil {
-		return "could not open session: " + err.Error()
-	}
-	return "opened " + shortID(n.SessionID)
-}
-
-func (u *uiModel) doBranch() string {
-	n := u.m.Selected()
-	if n == nil {
-		return ""
-	}
-	src := adapter.Session{ID: n.SessionID, CWD: n.SessionCWD, Path: n.SessionPath}
-	sid, err := u.a.Branch(src, n.Node.ID, n.SessionCWD)
-	if err != nil {
-		return "branch failed: " + err.Error()
-	}
-	u.st.Add(sid, store.Branch{
-		GraftedFrom: store.From{SessionID: n.SessionID, Node: n.Node.ID},
-		Title:       n.Node.Title,
-		CreatedAt:   time.Now().UTC(),
-	})
-	if err := u.st.Save(); err != nil {
-		return "branched " + shortID(sid) + ", but the tree was not saved: " + err.Error()
-	}
-	if err := u.a.Resume(sid, n.SessionCWD); err != nil {
-		return "branched " + shortID(sid) + ", but it did not open: " + err.Error()
-	}
-	return "branched " + shortID(sid)
 }
 
 func (u uiModel) View() string {
@@ -4086,6 +4203,9 @@ func (u uiModel) View() string {
 		b.WriteString(marker + renderRow(r, i == u.m.Cursor, u.current, u.width-2) + "\n")
 	}
 	b.WriteString("\n↑↓ move  ←→ fold  ⏎ open  b branch  esc close\n")
+	if u.busy != "" {
+		b.WriteString(u.busy + "\n")
+	}
 	if u.status != "" {
 		b.WriteString(u.status + "\n")
 	}
