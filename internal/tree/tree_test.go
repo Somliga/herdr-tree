@@ -1,6 +1,7 @@
 package tree
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -72,6 +73,40 @@ func TestDanglingGraftParentFallsBackToRoot(t *testing.T) {
 	roots := Build([]adapter.Session{sess("s2", "m1")}, st)
 	if len(roots) != 1 || roots[0].Node.ID != "m1" {
 		t.Fatalf("a session whose parent vanished must still render: %+v", roots)
+	}
+}
+
+func TestGraftedSiblingsRenderInAStableOrder(t *testing.T) {
+	// Two branches taken from the SAME turn. Map iteration order is randomised
+	// per run, so without explicit ordering these two swap places between
+	// launches of a tree the user navigates by position.
+	sessions := []adapter.Session{
+		sess("s1", "n1", "n2"),
+		sess("first", "a1"),
+		sess("second", "b1"),
+	}
+	var seen []string
+	for i := 0; i < 20; i++ {
+		st := emptyStore()
+		st.Add("first", store.Branch{GraftedFrom: store.From{SessionID: "s1", Node: "n1"}})
+		st.Add("second", store.Branch{GraftedFrom: store.From{SessionID: "s1", Node: "n1"}})
+
+		roots := Build(sessions, st)
+		var order []string
+		for _, c := range roots[0].Children {
+			order = append(order, c.SessionID)
+		}
+		got := strings.Join(order, ",")
+		if i == 0 {
+			seen = order
+			continue
+		}
+		if got != strings.Join(seen, ",") {
+			t.Fatalf("grafted sibling order changed between runs: %v then %v", seen, order)
+		}
+	}
+	if len(seen) != 3 {
+		t.Fatalf("want n2 plus both grafted children under n1, got %v", seen)
 	}
 }
 

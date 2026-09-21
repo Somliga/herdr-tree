@@ -3,6 +3,8 @@
 package tree
 
 import (
+	"sort"
+
 	"herdr-tree/internal/adapter"
 	"herdr-tree/internal/store"
 )
@@ -52,8 +54,34 @@ func Build(sessions []adapter.Session, s *store.Store) []*Node {
 		chains[sess.ID] = head
 	}
 
+	// Graft edges come out of a map, whose iteration order Go randomises per
+	// run. Attaching in that order would reshuffle grafted siblings under a
+	// turn between launches, and this tree is navigated by position. Order
+	// them the way roots are ordered — by the session list, which arrives
+	// newest-first — so the layout is stable and consistent.
+	position := make(map[string]int, len(sessions))
+	for i, sess := range sessions {
+		position[sess.ID] = i
+	}
+	edges := make([]string, 0, len(s.Branches))
+	for childSID := range s.Branches {
+		edges = append(edges, childSID)
+	}
+	sort.Slice(edges, func(i, j int) bool {
+		pi, oki := position[edges[i]]
+		pj, okj := position[edges[j]]
+		if oki != okj {
+			return oki // sessions we know about come first
+		}
+		if pi != pj {
+			return pi < pj
+		}
+		return edges[i] < edges[j]
+	})
+
 	attached := map[string]bool{}
-	for childSID, br := range s.Branches {
+	for _, childSID := range edges {
+		br := s.Branches[childSID]
 		child, ok := chains[childSID]
 		if !ok {
 			continue // session gone; nothing to attach
