@@ -19,6 +19,8 @@ func main() {
 		fmt.Fprintln(os.Stderr, "graft:", err)
 		os.Exit(1)
 	}
+	// Line 1 is the session id, line 2 is the file written. The script reads
+	// both so it can clean up the session afterwards.
 	fmt.Println(sid)
-	fmt.Fprintln(os.Stderr, "wrote", path)
+	fmt.Println(path)
 }
