@@ -9,6 +9,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"herdr-tree/internal/adapter"
+	"herdr-tree/internal/store"
 	"herdr-tree/internal/tree"
 )
 
@@ -24,7 +25,7 @@ func TestRenderRowShowsTitleAndIndent(t *testing.T) {
 }
 
 func TestRenderRowMarksCurrent(t *testing.T) {
-	n := &tree.Node{Node: adapter.Node{ID: "n1", Title: "x"}, SessionID: "sid-a"}
+	n := &tree.Node{Node: adapter.Node{ID: "n1", Title: "x"}, SessionID: "sid-a", IsSessionLeaf: true}
 	got := renderRow(Row{Node: n}, false, "sid-a", 80)
 	if !strings.Contains(got, "● current") {
 		t.Fatalf("current marker missing: %q", got)
@@ -151,6 +152,28 @@ func TestDstCWDFallsBackWhenTheSessionDirectoryIsGone(t *testing.T) {
 	}
 	if got := u.dstCWD(&tree.Node{SessionCWD: ""}); got != root {
 		t.Fatalf("an empty session cwd must fall back to the repo root: got %q want %q", got, root)
+	}
+}
+
+func TestOnlyTheLastTurnOfTheCurrentSessionIsMarkedCurrent(t *testing.T) {
+	sess := adapter.Session{ID: "sid-a", Title: "t"}
+	for _, id := range []string{"n1", "n2", "n3", "n4"} {
+		sess.Nodes = append(sess.Nodes, adapter.Node{ID: id, Title: "turn " + id})
+	}
+	roots := tree.Build([]adapter.Session{sess}, &store.Store{Branches: map[string]store.Branch{}})
+	rows := New(roots).Rows()
+
+	var marked []string
+	for _, r := range rows {
+		if strings.Contains(renderRow(r, false, "sid-a", 80), "● current") {
+			marked = append(marked, r.Node.Node.ID)
+		}
+	}
+	if len(marked) != 1 {
+		t.Fatalf("want exactly one marked row for a 4-turn current session, got %v", marked)
+	}
+	if marked[0] != "n4" {
+		t.Fatalf("marked row = %q want the last turn n4", marked[0])
 	}
 }
 

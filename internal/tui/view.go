@@ -59,7 +59,7 @@ func renderRow(r Row, selected bool, currentSession string, width int) string {
 	}
 	b.WriteString(title)
 
-	if r.Node.SessionID != "" && r.Node.SessionID == currentSession {
+	if r.Node.SessionID != "" && r.Node.SessionID == currentSession && r.Node.IsSessionLeaf {
 		b.WriteString("   ● current")
 	}
 	line := b.String()
