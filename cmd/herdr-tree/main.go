@@ -35,10 +35,18 @@ func main() {
 }
 
 // open asks Herdr to open the overlay in the focused pane's repo.
+//
+// The adapter check belongs HERE, not in pane(). This runs as a Herdr action
+// in the pane the user is looking at, so it can see which agent that pane is
+// running. pane() runs inside the overlay Herdr then opens, and an overlay
+// pane carries no agent at all — the check there could never fire.
 func open() error {
 	p, err := herdr.PaneCurrent()
 	if err != nil {
 		return err
+	}
+	if p.Agent != "" && p.Agent != "claude" {
+		return fmt.Errorf("no adapter for %s", p.Agent)
 	}
 	root, _, err := repo.Root(p.CWD)
 	if err != nil {
@@ -56,11 +64,6 @@ func pane() error {
 	root, isGit, err := repo.Root(cwd)
 	if err != nil {
 		return err
-	}
-	// One adapter today. Refuse rather than mislead when the pane holds
-	// something else: that refusal is the §10 boundary doing its job.
-	if p, perr := herdr.PaneCurrent(); perr == nil && p.Agent != "" && p.Agent != "claude" {
-		return fmt.Errorf("no adapter for %s", p.Agent)
 	}
 
 	a := claude.New()

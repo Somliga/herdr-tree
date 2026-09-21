@@ -81,7 +81,7 @@ func TestFailedResumeKeepsTheOverlayOpen(t *testing.T) {
 	n := &tree.Node{Node: adapter.Node{ID: "n1", Title: "x"}, SessionID: "sid-a"}
 	u := uiModel{m: New([]*tree.Node{n}), a: fakeAdapter{resumeErr: errors.New("pane split refused")}}
 
-	cmd := resumeCmd(u.a, n)
+	cmd := resumeCmd(u.a, n, "sid-a-cwd")
 	msg, ok := cmd().(actionDoneMsg)
 	if !ok {
 		t.Fatalf("want actionDoneMsg, got %T", cmd())
@@ -107,7 +107,7 @@ func TestSuccessfulResumeQuits(t *testing.T) {
 	n := &tree.Node{Node: adapter.Node{ID: "n1", Title: "x"}, SessionID: "sid-a"}
 	u := uiModel{m: New([]*tree.Node{n}), a: fakeAdapter{}}
 
-	msg := resumeCmd(u.a, n)().(actionDoneMsg)
+	msg := resumeCmd(u.a, n, "sid-a-cwd")().(actionDoneMsg)
 	if !msg.quit {
 		t.Fatal("a successful resume should close the overlay")
 	}

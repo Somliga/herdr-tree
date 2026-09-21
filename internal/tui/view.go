@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -66,7 +67,7 @@ func renderRow(r Row, selected bool, currentSession string, width int) string {
 }
 
 // confirmText is the branch confirmation, which is where the user is told
-// exactly what a graft copies.
+// exactly what a graft copies and where it will open.
 func confirmText(n *tree.Node, turns, entries int, size int64, dstCWD string) string {
 	return fmt.Sprintf(
 		"Branch from:  %q\nCarries:      %d turns · %d entries · %s\nOpens:        split right, unfocused in %s\n\n[enter] branch   [esc] cancel",
@@ -104,19 +105,34 @@ type actionDoneMsg struct {
 // duration with no feedback and no way to cancel, because Bubble Tea handles
 // one message at a time. As a tea.Cmd the work happens on its own goroutine
 // and the overlay keeps rendering.
-func resumeCmd(a adapter.Adapter, n *tree.Node) tea.Cmd {
+//
+// dstCWD is where a pane for this node should open. Normally the session's
+// own directory, so a worktree session reopens in its worktree. But that
+// directory can be gone — a removed worktree still shows in the tree by
+// design — and opening a pane there fails after the graft has already been
+// written. Fall back to the repo root, which exists by construction.
+func (u uiModel) dstCWD(n *tree.Node) string {
+	if n.SessionCWD != "" {
+		if fi, err := os.Stat(n.SessionCWD); err == nil && fi.IsDir() {
+			return n.SessionCWD
+		}
+	}
+	return u.repoRoot
+}
+
+func resumeCmd(a adapter.Adapter, n *tree.Node, dst string) tea.Cmd {
 	return func() tea.Msg {
-		if err := a.Resume(n.SessionID, n.SessionCWD); err != nil {
+		if err := a.Resume(n.SessionID, dst); err != nil {
 			return actionDoneMsg{status: "could not open session: " + err.Error()}
 		}
 		return actionDoneMsg{status: "opened " + shortID(n.SessionID), quit: true}
 	}
 }
 
-func branchCmd(a adapter.Adapter, st *store.Store, n *tree.Node) tea.Cmd {
+func branchCmd(a adapter.Adapter, st *store.Store, n *tree.Node, dst string) tea.Cmd {
 	return func() tea.Msg {
 		src := adapter.Session{ID: n.SessionID, CWD: n.SessionCWD, Path: n.SessionPath}
-		sid, err := a.Branch(src, n.Node.ID, n.SessionCWD)
+		sid, err := a.Branch(src, n.Node.ID, dst)
 		if err != nil {
 			return actionDoneMsg{status: "branch failed: " + err.Error()}
 		}
@@ -130,7 +146,7 @@ func branchCmd(a adapter.Adapter, st *store.Store, n *tree.Node) tea.Cmd {
 		if err := st.Save(); err != nil {
 			return actionDoneMsg{status: "branched " + shortID(sid) + ", but the tree was not saved: " + err.Error()}
 		}
-		if err := a.Resume(sid, n.SessionCWD); err != nil {
+		if err := a.Resume(sid, dst); err != nil {
 			return actionDoneMsg{status: "branched " + shortID(sid) + ", but it did not open: " + err.Error()}
 		}
 		return actionDoneMsg{status: "branched " + shortID(sid), quit: true}
@@ -170,7 +186,7 @@ func (u uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return u, nil
 				}
 				u.busy = "branching…"
-				return u, branchCmd(u.a, u.st, n)
+				return u, branchCmd(u.a, u.st, n, u.dstCWD(n))
 			case "esc", "q":
 				u.confirm = ""
 			}
@@ -194,7 +210,7 @@ func (u uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return u, nil
 			}
 			u.busy = "opening session…"
-			return u, resumeCmd(u.a, n)
+			return u, resumeCmd(u.a, n, u.dstCWD(n))
 		case "b":
 			if n := u.m.Selected(); n != nil && !n.Broken {
 				src := adapter.Session{ID: n.SessionID, CWD: n.SessionCWD, Path: n.SessionPath}
@@ -202,7 +218,7 @@ func (u uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if err != nil {
 					u.status = "cannot branch here: " + err.Error()
 				} else {
-					u.confirm = confirmText(n, turns, entries, size, n.SessionCWD)
+					u.confirm = confirmText(n, turns, entries, size, u.dstCWD(n))
 				}
 			}
 		}

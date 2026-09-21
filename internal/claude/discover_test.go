@@ -144,6 +144,39 @@ func TestDiscoverGroupsByRepoRoot(t *testing.T) {
 	}
 }
 
+func TestDiscoverSkipsOtherReposWithoutFullyParsingThem(t *testing.T) {
+	projects := t.TempDir()
+	t.Setenv("CLAUDE_PROJECTS_DIR", projects)
+	mine := t.TempDir()
+	theirs := t.TempDir()
+
+	writeSession(t, projects, "11111111-1111-4111-8111-111111111111", mine)
+	writeSession(t, projects, "22222222-2222-4222-8222-222222222222", theirs)
+
+	// Corrupt the OTHER repo's transcript beyond the head. A full parse would
+	// still succeed, but the cheap head check must reject it before we get
+	// there — and the result must be identical either way.
+	other := filepath.Join(projects, SlugFor(theirs), "22222222-2222-4222-8222-222222222222.jsonl")
+	b, err := os.ReadFile(other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(other, append(b, []byte("not json\n")...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := Discover(mine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].CWD != mine {
+		t.Fatalf("got %d sessions, want only the one in this repo: %+v", len(got), got)
+	}
+	if got[0].Broken {
+		t.Fatal("our own clean session must not be marked Broken")
+	}
+}
+
 func TestDiscoverMarksPartialTranscriptBroken(t *testing.T) {
 	projects := t.TempDir()
 	t.Setenv("CLAUDE_PROJECTS_DIR", projects)

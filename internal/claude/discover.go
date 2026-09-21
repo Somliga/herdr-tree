@@ -1,6 +1,9 @@
 package claude
 
 import (
+	"bufio"
+	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"sort"
@@ -60,6 +63,33 @@ func sessionCWD(es []Entry) string {
 	return ""
 }
 
+// headCWD reads only far enough to find the first cwd, so Discover can reject
+// a transcript belonging to another repository without decoding all of it.
+// Most of the cost of opening the tree was parsing megabytes of sessions that
+// were then discarded.
+func headCWD(path string) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
+	for n := 0; n < 200 && sc.Scan(); n++ {
+		line := bytes.TrimSpace(sc.Bytes())
+		if len(line) == 0 || line[0] != '{' {
+			continue
+		}
+		var probe struct {
+			CWD string `json:"cwd"`
+		}
+		if json.Unmarshal(line, &probe) == nil && probe.CWD != "" {
+			return probe.CWD
+		}
+	}
+	return ""
+}
+
 // Discover returns every session belonging to repoRoot, newest first.
 func Discover(repoRoot string) ([]adapter.Session, error) {
 	pattern := filepath.Join(ProjectsDir(), "*", "*.jsonl")
@@ -68,8 +98,27 @@ func Discover(repoRoot string) ([]adapter.Session, error) {
 		return nil, err
 	}
 
+	// repo.Root shells out to git; memoise per raw cwd so a repo with many
+	// sessions from the same directory pays for it once.
+	roots := map[string]string{}
+	rootOf := func(cwd string) string {
+		if r, ok := roots[cwd]; ok {
+			return r
+		}
+		r, _, err := repo.Root(cwd)
+		if err != nil {
+			r = ""
+		}
+		roots[cwd] = r
+		return r
+	}
+
 	var out []adapter.Session
 	for _, p := range paths {
+		head := headCWD(p)
+		if head == "" || rootOf(head) != repoRoot {
+			continue // belongs elsewhere (or unreadable): skip without a full parse
+		}
 		es, skipped, err := ParseFile(p)
 		if err != nil || len(es) == 0 {
 			continue // unreadable: cannot be attributed to any repo
@@ -78,8 +127,8 @@ func Discover(repoRoot string) ([]adapter.Session, error) {
 		if cwd == "" {
 			continue
 		}
-		root, _, err := repo.Root(cwd)
-		if err != nil || root != repoRoot {
+		root := rootOf(cwd)
+		if root != repoRoot {
 			continue
 		}
 		id := strings.TrimSuffix(filepath.Base(p), ".jsonl")

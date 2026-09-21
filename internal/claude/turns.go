@@ -10,6 +10,19 @@ import (
 // session is resumed. It is not something the user typed.
 const syntheticResume = "Continue from where you left off."
 
+// machinery marks user entries that Claude Code writes around a slash
+// command — the caveat banner, the command name, its captured stdout. They
+// are real transcript content, so Select keeps them, but they are not turns
+// anyone would branch from and they crowd the top of almost every session.
+// Measured on this machine: 277 of 3664 rendered turns, 7.6%.
+var machinery = []string{
+	"<local-command-caveat",
+	"<command-name>",
+	"<command-message>",
+	"<local-command-stdout",
+	"<user-memory-input",
+}
+
 // IsPrompt reports whether an entry is a turn the user actually took.
 func IsPrompt(e Entry) bool {
 	if e.Type() != "user" || e.IsSidechain() {
@@ -18,8 +31,14 @@ func IsPrompt(e Entry) bool {
 	if e.HasToolUseResult() || e.IsToolResult() {
 		return false
 	}
-	if strings.TrimSpace(e.Text()) == syntheticResume {
+	t := strings.TrimSpace(e.Text())
+	if t == syntheticResume {
 		return false
+	}
+	for _, m := range machinery {
+		if strings.HasPrefix(t, m) {
+			return false
+		}
 	}
 	return true
 }
