@@ -637,7 +637,7 @@ func TestTitleTruncation(t *testing.T) {
 	cases := []struct{ in, want string }{
 		{"short", "short"},
 		{"", ""},
-		{"\n\n  leading blanks", "leading blanks"},
+		{"\n\n  leading blanks", "leading bl…"},
 		{"0123456789abcdef", "0123456789…"},
 	}
 	for _, c := range cases {
