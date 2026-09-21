@@ -254,7 +254,7 @@ EOF
 
 **Interfaces:**
 - Consumes: nothing.
-- Produces: `claude.Entry` with fields `Raw map[string]any`, and methods `Type() string`, `UUID() string`, `ParentUUID() string`, `RequestID() string`, `IsSidechain() bool`, `HasToolUseResult() bool`, `Text() string`, `Timestamp() time.Time`, `CWD() string`, `SessionID() string`, `Version() string`, `AITitle() string`; `claude.ParseFile(path string) ([]Entry, error)`; `claude.Marshal(e Entry) ([]byte, error)`.
+- Produces: `claude.Entry` with fields `Raw map[string]any`, and methods `Type() string`, `UUID() string`, `ParentUUID() string`, `RequestID() string`, `IsSidechain() bool`, `HasToolUseResult() bool`, `Text() string`, `Timestamp() time.Time`, `CWD() string`, `SessionID() string`, `Version() string`, `AITitle() string`; `claude.ParseFile(path string) (entries []Entry, skipped int, err error)`; `claude.Marshal(e Entry) ([]byte, error)`.
 
 Entries must survive a decode/encode round-trip with unknown fields intact, because grafting rewrites three fields and copies everything else verbatim.
 
@@ -286,11 +286,13 @@ package claude
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
 func TestParseFileReadsEveryLine(t *testing.T) {
-	es, err := ParseFile("testdata/simple.jsonl")
+	es, _, err := ParseFile("testdata/simple.jsonl")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -318,7 +320,7 @@ func TestParseFileReadsEveryLine(t *testing.T) {
 }
 
 func TestTextExtraction(t *testing.T) {
-	es, _ := ParseFile("testdata/simple.jsonl")
+	es, _, _ := ParseFile("testdata/simple.jsonl")
 	if got := es[0].Text(); got != "first question" {
 		t.Fatalf("got %q", got)
 	}
@@ -327,8 +329,39 @@ func TestTextExtraction(t *testing.T) {
 	}
 }
 
+func TestParseFileCountsSkippedLines(t *testing.T) {
+	dir := t.TempDir()
+	good := `{"type":"user","uuid":"u1"}`
+	path := filepath.Join(dir, "s.jsonl")
+	// one good line, one truncated mid-write, one that is not an object
+	body := good + "\n" + `{"type":"user","uuid":` + "\nnot json\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	es, skipped, err := ParseFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(es) != 1 {
+		t.Fatalf("entries %d want 1", len(es))
+	}
+	if skipped != 2 {
+		t.Fatalf("skipped %d want 2 — callers rely on this to tell a partial transcript from a clean one", skipped)
+	}
+}
+
+func TestParseFileReportsZeroSkippedForCleanFile(t *testing.T) {
+	_, skipped, err := ParseFile("testdata/simple.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if skipped != 0 {
+		t.Fatalf("clean fixture reported %d skipped lines", skipped)
+	}
+}
+
 func TestRoundTripPreservesUnknownFields(t *testing.T) {
-	es, _ := ParseFile("testdata/simple.jsonl")
+	es, _, _ := ParseFile("testdata/simple.jsonl")
 	b, err := Marshal(es[3]) // the attachment entry
 	if err != nil {
 		t.Fatal(err)
@@ -491,13 +524,17 @@ func parseLine(line []byte) (Entry, error) {
 // Marshal re-encodes an entry. json.Number keeps integers byte-identical.
 func Marshal(e Entry) ([]byte, error) { return json.Marshal(e.Raw) }
 
-// ParseFile reads a transcript, skipping lines that are not JSON objects.
-// A malformed line is skipped rather than failing the whole session: a
-// partially written transcript should still render.
-func ParseFile(path string) ([]Entry, error) {
+// ParseFile reads a transcript. A malformed line is skipped rather than
+// failing the whole session, because a transcript being written right now is
+// legitimately truncated mid-line. The count of skipped lines is returned so
+// callers can tell "still being written" from "corrupt": Discover marks such
+// a session Broken, and Graft refuses it outright, because a dropped line can
+// break the parentUuid chain and silently produce a graft with the wrong
+// history.
+func ParseFile(path string) (entries []Entry, skipped int, err error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer f.Close()
 
@@ -506,16 +543,21 @@ func ParseFile(path string) ([]Entry, error) {
 	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024) // entries can be large
 	for sc.Scan() {
 		line := bytes.TrimSpace(sc.Bytes())
-		if len(line) == 0 || line[0] != '{' {
+		if len(line) == 0 {
 			continue
 		}
-		e, err := parseLine(line)
-		if err != nil {
+		if line[0] != '{' {
+			skipped++
+			continue
+		}
+		e, perr := parseLine(line)
+		if perr != nil {
+			skipped++
 			continue
 		}
 		out = append(out, e)
 	}
-	return out, sc.Err()
+	return out, skipped, sc.Err()
 }
 ```
 
@@ -563,7 +605,7 @@ package claude
 import "testing"
 
 func TestTurnsFiltersNonPrompts(t *testing.T) {
-	es, err := ParseFile("testdata/simple.jsonl")
+	es, _, err := ParseFile("testdata/simple.jsonl")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -584,7 +626,7 @@ func TestTurnsFiltersNonPrompts(t *testing.T) {
 }
 
 func TestTurnTitleIsFirstLineTruncated(t *testing.T) {
-	es, _ := ParseFile("testdata/simple.jsonl")
+	es, _, _ := ParseFile("testdata/simple.jsonl")
 	got := Turns(es)
 	if got[1].Title != "second question" {
 		t.Fatalf("got %q", got[1].Title)
@@ -606,7 +648,7 @@ func TestTitleTruncation(t *testing.T) {
 }
 
 func TestSessionTitlePrefersAITitle(t *testing.T) {
-	es, _ := ParseFile("testdata/simple.jsonl")
+	es, _, _ := ParseFile("testdata/simple.jsonl")
 	if got := SessionTitle(es); got != "Fixture session" {
 		t.Fatalf("got %q", got)
 	}
@@ -757,7 +799,7 @@ import (
 // TranscriptPath will later look for it.
 func writeSession(t *testing.T, projects, id, cwd string) {
 	t.Helper()
-	es, err := ParseFile("testdata/simple.jsonl")
+	es, _, err := ParseFile("testdata/simple.jsonl")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -899,7 +941,7 @@ func Discover(repoRoot string) ([]adapter.Session, error) {
 
 	var out []adapter.Session
 	for _, p := range paths {
-		es, err := ParseFile(p)
+		es, skipped, err := ParseFile(p)
 		if err != nil || len(es) == 0 {
 			continue // unreadable: cannot be attributed to any repo
 		}
@@ -923,6 +965,9 @@ func Discover(repoRoot string) ([]adapter.Session, error) {
 			Title:   SessionTitle(es),
 			Updated: updated,
 			Nodes:   Turns(es),
+			// A skipped line means the chain may have holes. Surface it as ⚠
+			// rather than rendering a partial conversation as if complete.
+			Broken: skipped > 0,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Updated.After(out[j].Updated) })
@@ -992,7 +1037,7 @@ func keys(m map[string]bool) []string {
 }
 
 func TestSelectKeepsChainSiblingsAndAttachments(t *testing.T) {
-	es, err := ParseFile("testdata/simple.jsonl")
+	es, _, err := ParseFile("testdata/simple.jsonl")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1015,7 +1060,7 @@ func TestSelectKeepsChainSiblingsAndAttachments(t *testing.T) {
 }
 
 func TestSelectExcludesDescendantsAndSidechains(t *testing.T) {
-	es, _ := ParseFile("testdata/simple.jsonl")
+	es, _, _ := ParseFile("testdata/simple.jsonl")
 	got, _ := Select(es, "u3")
 	for _, bad := range []string{"a3", "sc1"} {
 		if got[bad] {
@@ -1025,7 +1070,7 @@ func TestSelectExcludesDescendantsAndSidechains(t *testing.T) {
 }
 
 func TestSelectAtRootKeepsOnlyRootAndItsSiblings(t *testing.T) {
-	es, _ := ParseFile("testdata/simple.jsonl")
+	es, _, _ := ParseFile("testdata/simple.jsonl")
 	got, _ := Select(es, "u1")
 	want := []string{"at1", "u1"}
 	g := keys(got)
@@ -1035,7 +1080,7 @@ func TestSelectAtRootKeepsOnlyRootAndItsSiblings(t *testing.T) {
 }
 
 func TestSelectUnknownNode(t *testing.T) {
-	es, _ := ParseFile("testdata/simple.jsonl")
+	es, _, _ := ParseFile("testdata/simple.jsonl")
 	if _, err := Select(es, "nope"); err != ErrNodeNotFound {
 		t.Fatalf("got %v want ErrNodeNotFound", err)
 	}
@@ -1150,7 +1195,7 @@ EOF
 
 **Interfaces:**
 - Consumes: `Select` (Task 5), `Marshal`, `ParseFile` (Task 2), `SlugFor`, `ProjectsDir` (Task 4).
-- Produces: `claude.Graft(srcPath, atNode, dstCWD string) (newSessionID, dstPath string, err error)`; `claude.ErrUnsupportedVersion`.
+- Produces: `claude.Graft(srcPath, atNode, dstCWD string) (newSessionID, dstPath string, err error)`; `claude.ErrUnsupportedVersion`; `claude.ErrPartialTranscript`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1199,7 +1244,7 @@ func TestGraftWritesResumableSession(t *testing.T) {
 		t.Fatalf("mode %v want 0600 — conversation content must not be world readable", fi.Mode().Perm())
 	}
 
-	es, err := ParseFile(dst)
+	es, _, err := ParseFile(dst)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1234,6 +1279,23 @@ func TestGraftWritesResumableSession(t *testing.T) {
 		if e.Type() == "ai-title" || e.Type() == "cost-state" {
 			t.Fatalf("%s should be dropped", e.Type())
 		}
+	}
+}
+
+func TestGraftRefusesPartialTranscript(t *testing.T) {
+	projects := t.TempDir()
+	t.Setenv("CLAUDE_PROJECTS_DIR", projects)
+	src := filepath.Join(t.TempDir(), "s.jsonl")
+	good, err := os.ReadFile("testdata/simple.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// append a truncated line, as a transcript being written right now has
+	if err := os.WriteFile(src, append(good, []byte(`{"type":"user","uuid":`+"\n")...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := Graft(src, "u3", t.TempDir()); err != ErrPartialTranscript {
+		t.Fatalf("got %v want ErrPartialTranscript — a dropped line can break the parent chain", err)
 	}
 }
 
@@ -1282,6 +1344,10 @@ Then append the rest to the same file:
 // correct: a wrong graft produces a plausible session with wrong history.
 var ErrUnsupportedVersion = errors.New("unsupported Claude Code transcript version")
 
+// ErrPartialTranscript means some lines of the source transcript could not be
+// parsed, so its parentUuid chain cannot be trusted.
+var ErrPartialTranscript = errors.New("source transcript has unparseable lines")
+
 // verifiedMajorMinor is the format this adapter was validated against.
 const verifiedMajorMinor = "2.1"
 
@@ -1322,9 +1388,14 @@ func newUUIDv4() (string, error) {
 // atNode, as a fresh session rooted at dstCWD, and returns its id and path.
 // The source transcript is never modified.
 func Graft(srcPath, atNode, dstCWD string) (newSessionID, dstPath string, err error) {
-	es, err := ParseFile(srcPath)
+	es, skipped, err := ParseFile(srcPath)
 	if err != nil {
 		return "", "", err
+	}
+	if skipped > 0 {
+		// A dropped line can break the parentUuid chain, which would produce
+		// a graft that looks fine and carries the wrong history.
+		return "", "", ErrPartialTranscript
 	}
 	if err := checkVersion(es); err != nil {
 		return "", "", err
@@ -2498,7 +2569,7 @@ func TranscriptPath(sessionID, cwd string) string {
 // Preview reports what a graft at atNode would carry, without writing.
 func (claudeAdapter) Preview(src adapter.Session, atNode string) (turns, entries int, size int64, err error) {
 	path := TranscriptPath(src.ID, src.CWD)
-	es, err := ParseFile(path)
+	es, _, err := ParseFile(path)
 	if err != nil {
 		return 0, 0, 0, err
 	}
