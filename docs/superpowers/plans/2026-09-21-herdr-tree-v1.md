@@ -162,6 +162,47 @@ func TestWorktreeFoldsIntoMainRepo(t *testing.T) {
 	}
 }
 
+func TestRemovedWorktreeStillResolvesToItsRepo(t *testing.T) {
+	main := t.TempDir()
+	git(t, main, "init")
+	if err := os.WriteFile(filepath.Join(main, "f"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, main, "add", "f")
+	git(t, main, "commit", "-m", "init")
+
+	// A worktree inside the repo, then deleted — the everyday case.
+	wt := filepath.Join(main, ".worktrees", "gone")
+	git(t, main, "worktree", "add", "-b", "side", wt)
+	if err := os.RemoveAll(wt); err != nil {
+		t.Fatal(err)
+	}
+
+	got, isGit, err := Root(wt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !isGit {
+		t.Fatal("a removed worktree must still resolve to its repo, or its sessions vanish from the tree")
+	}
+	want, _ := filepath.EvalSymlinks(main)
+	if got != want {
+		t.Fatalf("got %q want %q", got, want)
+	}
+}
+
+func TestRemovedDirOutsideAnyRepoDoesNotMisattribute(t *testing.T) {
+	base := t.TempDir()
+	gone := filepath.Join(base, "never-existed", "deeper")
+	got, isGit, err := Root(gone)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if isGit {
+		t.Fatalf("walked up into a repo that never contained %q: got %q", gone, got)
+	}
+}
+
 func TestNonRepoReturnsDirItself(t *testing.T) {
 	dir := t.TempDir()
 	got, isGit, err := Root(dir)
@@ -193,6 +234,7 @@ Create `internal/repo/repo.go`:
 package repo
 
 import (
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -202,12 +244,33 @@ import (
 // main repository, so all worktrees group together. For a directory that is
 // not in a repository it returns the directory itself with isGit false,
 // which is a supported mode, not an error.
+//
+// dir need not still exist. A removed git worktree is ordinary in this
+// workflow, and the sessions recorded inside it are exactly the history a
+// user wants to look back at. When dir is gone, Root walks up to the nearest
+// surviving ancestor and resolves that instead, so those sessions stay
+// attributed to their repository rather than silently vanishing from the
+// tree. The walk cannot mis-attribute: it only ever yields a repository that
+// genuinely contains the missing path.
 func Root(dir string) (root string, isGit bool, err error) {
 	resolved, err := filepath.EvalSymlinks(dir)
 	if err != nil {
 		resolved = dir
 	}
-	cmd := exec.Command("git", "-C", resolved,
+
+	probe := resolved
+	for {
+		if fi, e := os.Stat(probe); e == nil && fi.IsDir() {
+			break
+		}
+		parent := filepath.Dir(probe)
+		if parent == probe { // reached the filesystem root
+			return resolved, false, nil
+		}
+		probe = parent
+	}
+
+	cmd := exec.Command("git", "-C", probe,
 		"rev-parse", "--path-format=absolute", "--git-common-dir")
 	out, gerr := cmd.Output()
 	if gerr != nil {
@@ -907,7 +970,7 @@ func TestDiscoverLeavesCleanSessionUnbroken(t *testing.T) {
 	}
 }
 
-func TestDiscoverMarksUnreadableSessionBroken(t *testing.T) {
+func TestDiscoverExcludesWhollyUnreadableSession(t *testing.T) {
 	projects := t.TempDir()
 	t.Setenv("CLAUDE_PROJECTS_DIR", projects)
 	repoDir := t.TempDir()
@@ -1017,7 +1080,8 @@ func Discover(repoRoot string) ([]adapter.Session, error) {
 			Broken: skipped > 0,
 		})
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Updated.After(out[j].Updated) })
+	// Stable so sessions with identical mtimes keep a deterministic order.
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Updated.After(out[j].Updated) })
 	return out, nil
 }
 ```
