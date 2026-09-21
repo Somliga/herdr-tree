@@ -3,6 +3,7 @@ package claude
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"herdr-tree/internal/adapter"
@@ -110,6 +111,44 @@ func TestAdapterReadsViaTheDiscoveredPath(t *testing.T) {
 	}
 	if _, err := New().Branch(sessions[0], sessions[0].Nodes[1].ID, repoDir); err != nil {
 		t.Fatalf("Branch could not read a relocated session: %v", err)
+	}
+}
+
+func TestAgentNameIsUniquePerPane(t *testing.T) {
+	sid := "60c5b417-ec35-4ea6-93bb-8246b877b19f"
+	a := agentName(sid, "wA:p2")
+	b := agentName(sid, "wA:p3")
+	if a == b {
+		t.Fatalf("the same session in two panes produced the same name %q; herdr requires live agent names to be unique", a)
+	}
+	for _, n := range []string{a, b} {
+		if !strings.HasPrefix(n, "tree-") {
+			t.Fatalf("name %q must start with tree-", n)
+		}
+		if len(n) > 32 {
+			t.Fatalf("name %q is longer than herdr allows", n)
+		}
+		for _, r := range n {
+			ok := r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-' || r == '_'
+			if !ok {
+				t.Fatalf("name %q contains %q, outside [a-z0-9_-]", n, r)
+			}
+		}
+		if n[0] < 'a' || n[0] > 'z' {
+			t.Fatalf("name %q must start with a letter", n)
+		}
+	}
+}
+
+func TestPreviewRejectsAnUnknownNode(t *testing.T) {
+	projects := t.TempDir()
+	t.Setenv("CLAUDE_PROJECTS_DIR", projects)
+	repoDir := t.TempDir()
+	writeSession(t, projects, "11111111-1111-4111-8111-111111111111", repoDir)
+
+	sessions, _ := New().Discover(repoDir)
+	if _, _, _, err := New().Preview(sessions[0], "no-such-node"); err == nil {
+		t.Fatal("want an error for a node that is not in the transcript")
 	}
 }
 
