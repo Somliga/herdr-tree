@@ -8,6 +8,15 @@ import (
 
 // injected marks user-entry text that Claude Code wrote on the user's behalf.
 // None of it was typed by a person, and all of it appears as type "user".
+// SummaryPrefix and CompactionPrefix open an injected summary's text. They are
+// the guarantee that a summary reads as a summary: the herdrTree field beside
+// them is more convenient to parse, but Claude Code has never been asked to
+// accept a field it does not recognise, so nothing may depend on it.
+const (
+	SummaryPrefix    = "⤶ summary of"
+	CompactionPrefix = "⤶ compacted"
+)
+
 var injected = []string{
 	"Another Claude session sent a message",
 	"<local-command-caveat", "<command-name>", "<command-message>",
@@ -122,10 +131,16 @@ func Classify(e Entry, hasOrigin bool) (adapter.Kind, bool) {
 		if e.HasToolUseResult() || e.IsToolResult() {
 			return 0, false // the call is shown, not the output
 		}
+		t := strings.TrimSpace(e.Text())
+		if strings.HasPrefix(t, SummaryPrefix) {
+			return adapter.KindSummaryImport, true
+		}
+		if strings.HasPrefix(t, CompactionPrefix) {
+			return adapter.KindSummaryCompaction, true
+		}
 		if hasOrigin {
 			return adapter.KindHuman, originKind(e) == "human"
 		}
-		t := strings.TrimSpace(e.Text())
 		if t == "" {
 			return 0, false
 		}

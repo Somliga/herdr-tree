@@ -12,6 +12,8 @@ const (
 	KindHuman Kind = iota
 	KindAssistant
 	KindToolCall
+	KindSummaryImport     // knowledge folded in from a branch
+	KindSummaryCompaction // a range of this line's own turns, shortened
 )
 
 func (k Kind) String() string {
@@ -20,6 +22,10 @@ func (k Kind) String() string {
 		return "assistant"
 	case KindToolCall:
 		return "tool"
+	case KindSummaryImport:
+		return "import"
+	case KindSummaryCompaction:
+		return "compaction"
 	default:
 		return "user"
 	}

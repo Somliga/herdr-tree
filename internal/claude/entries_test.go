@@ -1,6 +1,7 @@
 package claude
 
 import (
+	"encoding/json"
 	"testing"
 
 	"herdr-tree/internal/adapter"
@@ -173,6 +174,54 @@ func TestClassifyDropsTextlessAssistantAndThinking(t *testing.T) {
 			t.Fatalf("entry %v should have been dropped", e.UUID())
 		}
 	}
+}
+
+func TestClassifyRecognisesInjectedSummaries(t *testing.T) {
+	cases := []struct {
+		text string
+		want adapter.Kind
+	}{
+		{SummaryPrefix + " f2af34a4\n\nTried redis, rejected.", adapter.KindSummaryImport},
+		{CompactionPrefix + " t3..t9\n\nEight turns of auth work.", adapter.KindSummaryCompaction},
+		{"an ordinary thing I typed", adapter.KindHuman},
+	}
+	for _, c := range cases {
+		line := `{"type":"user","uuid":"u","parentUuid":null,"sessionId":"S","message":{"role":"user","content":[{"type":"text","text":` +
+			mustJSON(c.text) + `}]}}`
+		e, err := parseLine([]byte(line))
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, keep := Classify(e, false)
+		if !keep {
+			t.Fatalf("%q was dropped; an injected summary is part of the conversation", c.text[:20])
+		}
+		if got != c.want {
+			t.Fatalf("%q classified as %v, want %v", c.text[:20], got, c.want)
+		}
+	}
+}
+
+func TestInjectedSummaryIsKeptByTheGraft(t *testing.T) {
+	// The tree renders it distinctly; the graft must still carry it verbatim.
+	line := `{"type":"user","uuid":"s1","parentUuid":null,"sessionId":"S","message":{"role":"user","content":[{"type":"text","text":` +
+		mustJSON(SummaryPrefix+" abc\n\ntext") + `}]}}`
+	e, _ := parseLine([]byte(line))
+	keep, err := Select([]Entry{e}, "s1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !keep["s1"] {
+		t.Fatal("Select dropped an injected summary")
+	}
+}
+
+func mustJSON(s string) string {
+	b, err := json.Marshal(s)
+	if err != nil {
+		panic(err)
+	}
+	return string(b)
 }
 
 func TestTurnTitleIsFirstLineTruncated(t *testing.T) {
