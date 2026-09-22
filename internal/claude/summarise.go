@@ -44,6 +44,7 @@ func Summarise(srcPath, fromTurn, toTurn, tmpCWD string) (string, error) {
 	if skipped > 0 {
 		return "", ErrPartialTranscript
 	}
+	var titles []string
 	title := func(id string) string {
 		for _, e := range es {
 			if e.UUID() == id {
@@ -65,8 +66,10 @@ func Summarise(srcPath, fromTurn, toTurn, tmpCWD string) (string, error) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), summariseTimeout)
 	defer cancel()
+	fromTitle, toTitle := title(fromTurn), title(toTurn)
+	titles = append(titles, fromTitle, toTitle)
 	cmd := exec.CommandContext(ctx, "claude", "-p", "--resume", sid,
-		SummarisePrompt(title(fromTurn), title(toTurn)))
+		SummarisePrompt(fromTitle, toTitle))
 	cmd.Dir = tmpCWD
 	cmd.Stdin = nil
 	out, err := cmd.Output()
@@ -76,7 +79,12 @@ func Summarise(srcPath, fromTurn, toTurn, tmpCWD string) (string, error) {
 	if err != nil {
 		var ee *exec.ExitError
 		if errors.As(err, &ee) {
-			return "", fmt.Errorf("claude: %s", strings.TrimSpace(string(ee.Stderr)))
+			// The prompt we sent carries two turn titles, which are message
+			// content. If the CLI ever quotes its prompt argument back, that
+			// stderr becomes a status line holding the user's own words. The
+			// same route was already closed on the Herdr side; close it here
+			// rather than rely on a CLI's choice of diagnostics.
+			return "", fmt.Errorf("claude: %s", scrubTitles(string(ee.Stderr), titles))
 		}
 		return "", err
 	}
@@ -85,4 +93,17 @@ func Summarise(srcPath, fromTurn, toTurn, tmpCWD string) (string, error) {
 		return "", fmt.Errorf("claude returned an empty summary")
 	}
 	return text, nil
+}
+
+// scrubTitles removes any turn title from a diagnostic before it becomes a
+// status line. Titles are the user's own words; a CLI's stderr is not a place
+// we control, so what we hand onward is filtered rather than trusted.
+func scrubTitles(s string, titles []string) string {
+	for _, t := range titles {
+		if strings.TrimSpace(t) == "" {
+			continue
+		}
+		s = strings.ReplaceAll(s, t, "…")
+	}
+	return strings.TrimSpace(s)
 }

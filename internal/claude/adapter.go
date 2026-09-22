@@ -1,6 +1,7 @@
 package claude
 
 import (
+	"os"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -75,7 +76,24 @@ func (claudeAdapter) BranchSeeded(src adapter.Session, atNode, dstCWD, seed stri
 }
 
 func (claudeAdapter) Summarise(src adapter.Session, fromTurn, toTurn string) (string, error) {
-	return Summarise(sourcePath(src), fromTurn, toTurn, src.CWD)
+	// Deliberately NOT src.CWD. Summarise grafts a throwaway session into the
+	// project directory derived from the cwd it is handed, and Discover scans
+	// that same directory. Interrupting a summarise is allowed — ctrl+c
+	// reaches tea.Quit on purpose, because the call can take minutes — and an
+	// interrupted process never runs Summarise's deferred cleanup. Handed
+	// src.CWD, the orphan then appears in the user's own tree as a new root
+	// session. A temp dir puts it where Discover never looks and the OS
+	// sweeps it.
+	//
+	// Resuming with an unrelated cwd is proven, not assumed: v1's graft
+	// verification against Claude Code 2.1.278 resumed from a mktemp cwd, and
+	// scripts/verify-timeline.sh summarises into one.
+	tmp, err := os.MkdirTemp("", "herdr-tree-summarise-")
+	if err != nil {
+		return "", err
+	}
+	defer os.RemoveAll(tmp)
+	return Summarise(sourcePath(src), fromTurn, toTurn, tmp)
 }
 
 // agentName builds a Herdr agent name for a session in a pane.

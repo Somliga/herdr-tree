@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"herdr-tree/internal/adapter"
 )
 
 func TestSummarisePromptNamesBothEnds(t *testing.T) {
@@ -95,5 +97,70 @@ func TestSummarisePassesThePromptAsOneArgument(t *testing.T) {
 	// holds — never a shell string.
 	if !strings.Contains(args[3], "Summarise only the part") {
 		t.Fatalf("the prompt is not the fourth argument: %q", args[3])
+	}
+}
+
+// An interrupted summarise never runs the deferred cleanup — ctrl+c reaches
+// tea.Quit on purpose, because the call can take minutes. What matters then
+// is WHERE the throwaway lands. Handed the session's own cwd, the orphan
+// appears in the user's tree as a new root session, because Discover scans
+// exactly that directory. So the adapter must hand Summarise somewhere else.
+//
+// Asserting the directory is empty afterwards would prove nothing: on a
+// successful run the deferred removal tidies up either way. What this pins is
+// the cwd the summarising process actually runs in.
+func TestSummariseRunsOutsideTheSessionsOwnProjectDirectory(t *testing.T) {
+	projects := t.TempDir()
+	t.Setenv("CLAUDE_PROJECTS_DIR", projects)
+	dir := t.TempDir()
+	pwdFile := filepath.Join(dir, "pwd")
+	stubClaude(t, "printf '%s' \"$PWD\" > "+pwdFile+"; echo ok")
+
+	repo := t.TempDir()
+	ownDir := filepath.Join(projects, SlugFor(repo))
+	if err := os.MkdirAll(ownDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	src, err := os.ReadFile("testdata/simple.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sid := "11111111-1111-4111-8111-111111111111"
+	if err := os.WriteFile(filepath.Join(ownDir, sid+".jsonl"), src, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := New().Summarise(adapter.Session{ID: sid, CWD: repo}, "u1", "u3"); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := os.ReadFile(pwdFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) == repo {
+		t.Fatalf("summarised in the session's own cwd %q, so its throwaway lands where Discover scans", repo)
+	}
+}
+
+// The prompt carries two turn titles — the user's own words. If the CLI ever
+// quotes its prompt argument back on stderr, that error becomes a status line
+// holding them. The identical route was closed on the Herdr side; a CLI's
+// choice of diagnostics is not something to rely on.
+func TestSummariseErrorDoesNotRepeatTheTurnTitles(t *testing.T) {
+	projects := t.TempDir()
+	t.Setenv("CLAUDE_PROJECTS_DIR", projects)
+	// simple.jsonl's u1 is titled "first question"; echo the prompt back the
+	// way a CLI complaining about its arguments would.
+	stubClaude(t, `printf 'bad argument: %s\n' "$4" >&2; exit 1`)
+
+	_, err := Summarise("testdata/simple.jsonl", "u1", "u3", t.TempDir())
+	if err == nil {
+		t.Fatal("want an error")
+	}
+	for _, leaked := range []string{"first question", "second question"} {
+		if strings.Contains(err.Error(), leaked) {
+			t.Fatalf("the error repeated a turn title %q: %v", leaked, err)
+		}
 	}
 }
