@@ -18,7 +18,10 @@ import (
 // timeout bounds every herdr invocation. `agent start` waits for the agent to
 // become ready (herdr's own default is 30s), and these calls are made from the
 // TUI, so an unbounded wait is a permanently stuck overlay with no way out.
-const timeout = 45 * time.Second
+// A var, not a const, only so a test can shrink it: the timeout path formats
+// an error too, and it leaked the whole argv until a review caught that no
+// test ever drove run() into it.
+var timeout = 45 * time.Second
 
 // ErrUnsafeArgument means a value would be read as a flag rather than as data.
 // herdr does NOT accept the --flag=value form (verified: it answers "unknown

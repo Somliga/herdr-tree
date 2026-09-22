@@ -1,6 +1,7 @@
 package herdr
 
 import (
+	"time"
 	"errors"
 	"os"
 	"path/filepath"
@@ -220,5 +221,30 @@ func TestAgentPromptRefusesFlagShapedMessageWithoutEchoingIt(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "private conversation") {
 		t.Fatalf("the refusal echoed the message: %q", err)
+	}
+}
+
+// The timeout path formats its own error, so it is its own leak route. No test
+// drove run() into it until a review reverted cmdWords there and watched the
+// whole suite stay green.
+func TestRunTimeoutOmitsArgvContent(t *testing.T) {
+	// `exec` matters: CommandContext kills the direct child only, so a stub
+	// that FORKS sleep keeps the stdout pipe open and Output() blocks for the
+	// full five seconds even though the context fired on time.
+	stubHerdr(t, "exec sleep 5")
+	old := timeout
+	timeout = 20 * time.Millisecond
+	t.Cleanup(func() { timeout = old })
+
+	secret := "⤶ summary of abc\n\nthe user's private conversation text"
+	err := AgentPrompt("tree-abc", secret)
+	if err == nil {
+		t.Fatal("want a timeout error")
+	}
+	if !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("got %v, want a timeout", err)
+	}
+	if strings.Contains(err.Error(), "private conversation") {
+		t.Fatalf("the timeout error leaked the message: %q", err)
 	}
 }
