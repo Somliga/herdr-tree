@@ -5490,3 +5490,151 @@ list; and `Select` still keeps everything the tree hides.
 
 `go build ./...`, `go vet ./...`, `go test ./...`, then
 `go build -o bin/herdr-tree.exe ./cmd/herdr-tree`.
+
+---
+
+### Task 17: group the conversation into turn sections
+
+**The problem.** Task 16 made rows the whole conversation, which is right, but a
+real session renders as 684 flat rows with no structure and no way to traverse
+them. Pi gets its structure from fork topology — indent at a branch point, flat
+along a single-child chain — and that works because a Pi session that is worth
+opening the tree on has forks in it. A Claude Code session has none until the
+user makes one, so topology-only indentation yields a flat wall.
+
+**The structure is the turn.** A human prompt starts a section; every assistant
+reply and tool call it produced is that section's body. Sections sit at the same
+level as each other — chaining them would reintroduce depth-equals-turn-number —
+and a section's body sits one level in. Folded by default, a 684-row session
+shows as 19 prompts, which is both navigable and exactly the list you want when
+choosing where to branch.
+
+This is a departure from Pi, and deliberately: Pi's sessions have topology to
+show, ours do not.
+
+**Files:**
+- Modify: `internal/tree/tree.go` (build sections), `internal/tui/model.go`
+  (indent rule, fold sections by default), `internal/tui/view.go` (section
+  counts in the header row)
+- Test: the three existing test files
+
+- [ ] **Step 1: Build sections in `tree.Build`**
+
+Replace the per-turn chain construction. Within a session:
+
+```go
+		var head, prev *Node
+		for i, t := range sess.Nodes {
+			n := &Node{
+				Node: t, SessionID: sess.ID, SessionCWD: sess.CWD,
+				SessionPath: sess.Path, SessionTitle: sess.Title,
+				IsSessionRoot: i == 0,
+				IsSessionLeaf: i == len(sess.Nodes)-1,
+				Broken:        sess.Broken,
+			}
+			n.Label = s.Labels[store.LabelKey(sess.ID, t.ID)]
+			nodeIndex[sess.ID][t.ID] = n
+
+			isHead := t.Kind == adapter.KindHuman || head == nil
+			switch {
+			case head == nil && prev == nil:
+				// first node of the session
+			case isHead:
+				// a new section hangs off the previous section head, so
+				// sections form a chain the indent rule keeps level
+				head.Children = append(head.Children, n)
+			default:
+				// body of the current section
+				head.Children = append(head.Children, n)
+			}
+			if isHead {
+				head = n
+			}
+			if prev == nil {
+				chains[sess.ID] = n
+			}
+			prev = n
+		}
+```
+
+Note both non-first branches append to `head.Children`; the distinction that
+matters is whether `n` becomes the new `head`, and `IsHead` is recorded on the
+node so the indent rule and the folding default can see it. Add:
+
+```go
+	// IsHead marks a section head: a human prompt, or the first entry of a
+	// session that does not start with one. Everything until the next head is
+	// that section's body.
+	IsHead bool
+```
+
+and set `n.IsHead = isHead`.
+
+- [ ] **Step 2: Indent a section's body, not its siblings**
+
+In `internal/tui/model.go`'s `Rows` walk, replace the graft-only rule:
+
+```go
+		for _, c := range n.Children {
+			next := depth
+			switch {
+			case c.SessionID != n.SessionID:
+				next = depth + 1 // a graft: a real branch in the tree
+			case n.IsHead && !c.IsHead:
+				next = depth + 1 // this section's body
+			}
+			walk(c, next)
+		}
+```
+
+A head whose parent is a head stays level, so nineteen prompts render as
+nineteen rows at depth 0 however long the session is.
+
+- [ ] **Step 3: Fold sections by default**
+
+In `New`, fold every head that has a body:
+
+```go
+	// Sections start folded. The point of opening the tree is to find a turn,
+	// not to read 684 rows of tool calls; the body is one keypress away.
+	for n := range m.parent {
+		if n.IsHead && len(n.Children) > 0 {
+			m.Folded[n] = true
+		}
+	}
+	for _, r := range roots {
+		if r.IsHead && len(r.Children) > 0 {
+			m.Folded[r] = true
+		}
+	}
+```
+
+`Unfold` on a head opens it; `Fold` closes it again. A folded head must still
+show its descendants' count so the row says what it is hiding.
+
+- [ ] **Step 4: Show what a folded section contains**
+
+In `renderRow`, when a row is folded and has children, append the size of the
+body:
+
+```go
+	if r.Folded && r.HasChildren {
+		b.WriteString(fmt.Sprintf("  (%d)", r.BodyCount))
+	}
+```
+
+`Row` gains `BodyCount int`, filled in `Rows` by counting the node's
+descendants within the same session.
+
+- [ ] **Step 5: Tests**
+
+Design them yourself. Constrain at least: a 19-prompt session with 660 body
+entries renders as 19 rows when folded and all 679 when every head is
+unfolded; every head sits at depth 0 regardless of session length; a body row
+sits exactly one level in; a grafted session still indents one level from the
+turn it branched off; and `Select` is unaffected.
+
+- [ ] **Step 6: Rebuild and commit**
+
+`go build ./...`, `go vet ./...`, `go test ./...`, then
+`go build -o bin/herdr-tree.exe ./cmd/herdr-tree`.
