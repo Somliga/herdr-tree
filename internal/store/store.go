@@ -161,20 +161,8 @@ func sortSummaries(out []Summary) {
 	})
 }
 
-// SummariesFor returns every summary recorded against a session, oldest first.
-func (s *Store) SummariesFor(sessionID string) []Summary {
-	var out []Summary
-	for _, v := range s.Summaries {
-		if v.SessionID == sessionID {
-			out = append(out, v)
-		}
-	}
-	sortSummaries(out)
-	return out
-}
-
-// AllSummaries returns every summary in the store, ordered as SummariesFor
-// orders one session's. The fold-back picker offers summaries from every
+// AllSummaries returns every summary in the store, oldest first. The
+// fold-back picker offers summaries from every
 // session, not just the one the cursor is in: folding a branch back is the
 // whole point, and the branch is by definition a different session.
 func (s *Store) AllSummaries() []Summary {

@@ -173,6 +173,9 @@ type uiModel struct {
 	confirm  string
 	status   string
 	busy     string // non-empty while an adapter call is in flight
+	// abandoning is set by the first ctrl+c during a call, so the second one
+	// is a deliberate choice rather than a reflex.
+	abandoning bool
 	quitting bool
 
 	// send delivers text to a live agent, and liveAgent names the agent
@@ -341,8 +344,18 @@ func summariseCmd(a adapter.Adapter, st *store.Store, from, to *tree.Node) tea.C
 // a compaction: the line contracted and nothing new arrived. The two are the
 // same operation and the same machinery — only this prefix tells them apart,
 // and the classifier and the palette read nothing else.
-func foldBackSeed(at *tree.Node, sum store.Summary) string {
-	if sum.SessionID == at.SessionID {
+// foldBackSeed marks the entry by what the fold-back DOES, not by where the
+// summary came from. §6b's two meanings are effects: blue says these turns
+// were on this line and got replaced by something shorter, orange says
+// knowledge arrived from a line that was abandoned.
+//
+// So rewinding matters. Folding a summary of this session's own turns 5..12
+// onto its LIVE tip replaces nothing — all the turns are still ahead of it —
+// and calling that a compaction renders blue over a line that did not
+// contract. Only the graft path rewinds, so only the graft path may say
+// compacted. Session identity alone cannot tell the two apart.
+func foldBackSeed(at *tree.Node, sum store.Summary, rewinding bool) string {
+	if rewinding && sum.SessionID == at.SessionID {
 		return claudeCompactionPrefix + " " + shortID(sum.FromTurn) + ".." + shortID(sum.ToTurn) + "\n\n" + sum.Text
 	}
 	return claudeSummaryPrefix + " " + shortID(sum.SessionID) + "\n\n" + sum.Text
@@ -379,8 +392,9 @@ func scrubbed(err error, seed string) string {
 // expected one, and they will not notice until much later.
 func foldBackCmd(a adapter.Adapter, st *store.Store, at *tree.Node, dst string, sum store.Summary, liveAgent string, send SendFunc) tea.Cmd {
 	return func() tea.Msg {
-		seed := foldBackSeed(at, sum)
-		if at.IsSessionLeaf && liveAgent != "" && send != nil {
+		sending := at.IsSessionLeaf && liveAgent != "" && send != nil
+		seed := foldBackSeed(at, sum, !sending)
+		if sending {
 			if err := send(liveAgent, seed); err != nil {
 				return actionDoneMsg{status: "not sent to " + liveAgent + ": " + scrubbed(err, seed) + " — nothing was written"}
 			}
@@ -464,6 +478,7 @@ func (u uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		u.width, u.height = msg.Width, msg.Height
 	case actionDoneMsg:
 		u.busy = ""
+		u.abandoning = false
 		u.status = msg.status
 		if msg.quit {
 			u.quitting = true
@@ -474,7 +489,17 @@ func (u uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if u.busy != "" {
 			// An adapter call is in flight. Swallow input rather than queueing
 			// a second one, but never trap the user.
+			//
+			// The first ctrl+c does not quit. Quitting exits the process, and
+			// the watchdog that would kill the model call dies with it — the
+			// call runs to completion and is billed either way. Leaving
+			// silently makes that spend invisible, so say it once and let a
+			// second press through for anyone who wants out regardless.
 			if msg.String() == "ctrl+c" {
+				if !u.abandoning {
+					u.abandoning = true
+					return u, nil
+				}
 				u.quitting = true
 				return u, tea.Quit
 			}
@@ -721,6 +746,9 @@ func (u uiModel) View() string {
 	}
 	if u.busy != "" {
 		b.WriteString(u.busy + "\n")
+		if u.abandoning {
+			b.WriteString("this call is already billed; ctrl+c again to leave it running\n")
+		}
 	}
 	if u.status != "" {
 		b.WriteString(u.status + "\n")

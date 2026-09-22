@@ -71,6 +71,13 @@ func Summarise(srcPath, fromTurn, toTurn, tmpCWD string) (string, error) {
 	// non-empty directory, so this can never take anything with it. Claude
 	// Code also creates an empty memory/ inside a project; v1's graft
 	// verification found that one the hard way.
+	//
+	// ponytail: a hardcoded list of one known empty child. If Claude Code ever
+	// adds a second one to a fresh project, os.Remove(dir) starts failing
+	// again and the accumulation above returns with nothing reporting it. The
+	// test below pins today's shape only. Generalising this to "delete every
+	// empty child" would trade a leak for the thing os.Remove is here to
+	// prevent, so the ceiling is deliberate.
 	defer func() {
 		os.Remove(path)
 		dir := filepath.Dir(path)

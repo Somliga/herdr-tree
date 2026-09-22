@@ -206,3 +206,40 @@ func TestSummariseRemovesTheProjectDirEvenWithAMemoryDir(t *testing.T) {
 		t.Fatalf("the project directory survived: %v", err)
 	}
 }
+
+// The cleanup's safety rests on os.Remove refusing a non-empty directory, and
+// nothing pinned it: swapping os.Remove for os.RemoveAll leaves both of the
+// other cleanup tests green, because they assert the directory is GONE and
+// neither asserts anything survives. It is load-bearing because Summarise
+// takes tmpCWD from its caller — cmd/timelinecheck passes it straight from
+// argv, so a mistyped invocation aims this at a real project directory.
+func TestSummariseCleanupRemovesNothingItDidNotCreate(t *testing.T) {
+	projects := t.TempDir()
+	t.Setenv("CLAUDE_PROJECTS_DIR", projects)
+	stubClaude(t, `echo ok`)
+
+	cwd := t.TempDir()
+	dir := filepath.Join(projects, SlugFor(cwd))
+	if err := os.MkdirAll(filepath.Join(dir, "memory"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	// Someone else's session, sitting in the directory this call will clean.
+	sibling := filepath.Join(dir, "not-ours.jsonl")
+	if err := os.WriteFile(sibling, []byte("{}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	notes := filepath.Join(dir, "memory", "notes.md")
+	if err := os.WriteFile(notes, []byte("kept\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Summarise("testdata/simple.jsonl", "u1", "u3", cwd); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, p := range []string{sibling, notes} {
+		if _, err := os.Stat(p); err != nil {
+			t.Fatalf("the cleanup removed a file it did not create (%s): %v", p, err)
+		}
+	}
+}

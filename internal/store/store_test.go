@@ -236,17 +236,17 @@ func TestSummaryRoundTripAndLookup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := again.SummariesFor("sess-a")
+	got := summariesFor(again, "sess-a")
 	if len(got) != 2 {
 		t.Fatalf("got %d summaries for sess-a, want 2", len(got))
 	}
 	if got[0].Text == "" || got[0].FromTurn == "" {
 		t.Fatalf("summary lost fields in the round trip: %+v", got[0])
 	}
-	if len(again.SummariesFor("sess-b")) != 1 {
+	if len(summariesFor(again, "sess-b")) != 1 {
 		t.Fatal("summaries leaked between sessions")
 	}
-	if len(again.SummariesFor("nobody")) != 0 {
+	if len(summariesFor(again, "nobody")) != 0 {
 		t.Fatal("unknown session returned summaries")
 	}
 }
@@ -264,7 +264,7 @@ func TestConcurrentSavesKeepBothSummaries(t *testing.T) {
 		t.Fatal(err)
 	}
 	final, _ := Load("/repo")
-	if len(final.SummariesFor("s")) != 2 {
+	if len(summariesFor(final, "s")) != 2 {
 		t.Fatalf("a summary was discarded by the other pane's save: %+v", final.Summaries)
 	}
 }
@@ -288,18 +288,31 @@ func TestSummaryOrderIsStableAcrossCalls(t *testing.T) {
 		}
 		return out
 	}
-	first, firstAll := key(s.SummariesFor("sess")), key(s.AllSummaries())
+	first, firstAll := key(summariesFor(s, "sess")), key(s.AllSummaries())
 	if len(first) != 3 || len(firstAll) != 4 {
 		t.Fatalf("setup: got %v and %v", first, firstAll)
 	}
 	for i := 0; i < 20; i++ {
-		if got := key(s.SummariesFor("sess")); !equalStrings(got, first) {
+		if got := key(summariesFor(s, "sess")); !equalStrings(got, first) {
 			t.Fatalf("call %d reordered SummariesFor: %v then %v", i, first, got)
 		}
 		if got := key(s.AllSummaries()); !equalStrings(got, firstAll) {
 			t.Fatalf("call %d reordered AllSummaries: %v then %v", i, firstAll, got)
 		}
 	}
+}
+
+// summariesFor is what the store no longer provides: nothing in the plugin
+// asked for one session's summaries, so the accessor went and the filtering
+// lives here, where the tests that need it are.
+func summariesFor(s *Store, sessionID string) []Summary {
+	var out []Summary
+	for _, v := range s.AllSummaries() {
+		if v.SessionID == sessionID {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 func equalStrings(a, b []string) bool {

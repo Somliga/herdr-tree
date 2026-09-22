@@ -159,10 +159,16 @@ func TestKeystrokesAreIgnoredWhileAnActionIsInFlight(t *testing.T) {
 	if after.(uiModel).confirm != "" {
 		t.Fatal("a keystroke started a second action while one was in flight")
 	}
-	// but ctrl+c must always work
-	after2, cmd := u.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	// ctrl+c must always get the user out — but not on the first press, which
+	// only warns that the call is already billed. See
+	// TestCtrlCDuringACallSaysTheSpendIsAlreadyCommitted.
+	warned, cmd := u.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if cmd != nil {
+		t.Fatal("the first ctrl+c must warn, not quit")
+	}
+	after2, cmd := warned.(uiModel).Update(tea.KeyMsg{Type: tea.KeyCtrlC})
 	if !after2.(uiModel).quitting || cmd == nil {
-		t.Fatal("ctrl+c must not be swallowed while busy")
+		t.Fatal("a second ctrl+c must not be swallowed while busy")
 	}
 }
 
@@ -391,7 +397,7 @@ func TestSummariseStoresTheRangeAndKeepsTheOverlayOpen(t *testing.T) {
 	if fa.summarisedFrom != "t1" || fa.summarisedTo != "t3" {
 		t.Fatalf("summarised %q..%q, want t1..t3", fa.summarisedFrom, fa.summarisedTo)
 	}
-	got := st.SummariesFor("s")
+	got := summariesFor(st, "s")
 	if len(got) != 1 {
 		t.Fatalf("got %d summaries for s, want 1", len(got))
 	}
@@ -417,7 +423,7 @@ func TestFailedSummariseStoresNothingAndKeepsTheOverlayOpen(t *testing.T) {
 	if !strings.Contains(msg.status, "credit balance too low") {
 		t.Fatalf("status does not carry the cause: %q", msg.status)
 	}
-	if len(st.SummariesFor("s")) != 0 {
+	if len(summariesFor(st, "s")) != 0 {
 		t.Fatal("a failed summarise recorded a summary")
 	}
 }
@@ -921,4 +927,68 @@ func TestSOnAnEmptyTreeClaimsNothing(t *testing.T) {
 	if got.status != "" {
 		t.Fatalf("the status claims a range was started: %q", got.status)
 	}
+}
+
+// Quitting mid-call exits the process, and the watchdog that would kill the
+// model call dies with it: the call completes and is billed whether the user
+// waits or not. So the first ctrl+c must not leave silently — it has to say
+// the money is already spent, and only a second press abandons it.
+func TestCtrlCDuringACallSaysTheSpendIsAlreadyCommitted(t *testing.T) {
+	u := uiModel{m: New([]*tree.Node{chain("t1")}), busy: "summarising…", width: 80, height: 24}
+
+	m1, cmd := u.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	first := m1.(uiModel)
+	if cmd != nil {
+		t.Fatal("the first ctrl+c must not quit; the call is billed either way")
+	}
+	if !strings.Contains(first.View(), "already billed") {
+		t.Fatalf("the first ctrl+c said nothing about the spend:\n%s", first.View())
+	}
+
+	m2, cmd := first.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if cmd == nil {
+		t.Fatal("a second ctrl+c must still let the user out")
+	}
+	if !m2.(uiModel).quitting {
+		t.Fatal("the second ctrl+c must quit")
+	}
+}
+
+// Folding a summary of this session's own turns onto its LIVE tip replaces
+// nothing — every turn is still ahead of it — so calling it a compaction
+// paints blue ("this line contracted") over a line that did not. Only the
+// graft path rewinds.
+func TestOnlyARewindIsCalledACompaction(t *testing.T) {
+	at := &tree.Node{Node: adapter.Node{ID: "t20"}, SessionID: "s1", IsSessionLeaf: true}
+	sum := store.Summary{SessionID: "s1", FromTurn: "t5", ToTurn: "t12", Text: "what we settled"}
+
+	if got := foldBackSeed(at, sum, true); !strings.HasPrefix(got, claudeCompactionPrefix) {
+		t.Fatalf("a rewind of this line's own turns is a compaction, got %q", firstLineOf(got))
+	}
+	sent := foldBackSeed(at, sum, false)
+	if strings.HasPrefix(sent, claudeCompactionPrefix) {
+		t.Fatalf("appending to a live tip contracts nothing, so it is not a compaction: %q", firstLineOf(sent))
+	}
+	if !strings.HasPrefix(sent, claudeSummaryPrefix) {
+		t.Fatalf("an injected entry must still carry a marker: %q", firstLineOf(sent))
+	}
+}
+
+func firstLineOf(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return s[:i]
+	}
+	return s
+}
+
+// summariesFor is what the store no longer provides: nothing in the plugin
+// asked for one session's summaries, so the accessor went.
+func summariesFor(st *store.Store, sessionID string) []store.Summary {
+	var out []store.Summary
+	for _, v := range st.AllSummaries() {
+		if v.SessionID == sessionID {
+			out = append(out, v)
+		}
+	}
+	return out
 }
