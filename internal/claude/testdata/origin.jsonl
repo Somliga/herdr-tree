@@ -1,0 +1,6 @@
+{"type":"user","uuid":"o1","parentUuid":null,"sessionId":"S","cwd":"/repo","version":"2.1.278","timestamp":"2026-01-01T12:00:00Z","origin":{"kind":"human"},"message":{"role":"user","content":[{"type":"text","text":"real prompt one"}]}}
+{"type":"assistant","uuid":"oa1","parentUuid":"o1","sessionId":"S","requestId":"r1","timestamp":"2026-01-01T12:00:01Z","message":{"role":"assistant","content":[{"type":"text","text":"answer one"}]}}
+{"type":"user","uuid":"peer1","parentUuid":"oa1","sessionId":"S","origin":{"kind":"peer","from":"other-session"},"timestamp":"2026-01-01T12:00:02Z","message":{"role":"user","content":[{"type":"text","text":"Another Claude session sent a message: hello there"}]}}
+{"type":"user","uuid":"skill1","parentUuid":"peer1","sessionId":"S","timestamp":"2026-01-01T12:00:03Z","message":{"role":"user","content":[{"type":"text","text":"Base directory for this skill: /foo"}]}}
+{"type":"user","uuid":"o2","parentUuid":"skill1","sessionId":"S","origin":{"kind":"human"},"timestamp":"2026-01-01T12:00:04Z","message":{"role":"user","content":[{"type":"text","text":"<bash-input>ls -la</bash-input>"}]}}
+{"type":"ai-title","aiTitle":"Origin fixture session","sessionId":"S"}

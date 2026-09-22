@@ -273,6 +273,79 @@ func TestScopeToEmptySessionIDReturnsNil(t *testing.T) {
 	}
 }
 
+func TestWindowKeepsSelectionVisibleAtTopMiddleAndBottom(t *testing.T) {
+	ids := make([]string, 50)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("n%d", i+1)
+	}
+	m := New([]*tree.Node{chain(ids...)})
+
+	m.Cursor = 0
+	rows, start, total := m.Window(10)
+	if total != 50 {
+		t.Fatalf("total %d want 50", total)
+	}
+	if m.Cursor < start || m.Cursor >= start+len(rows) {
+		t.Fatalf("cursor %d not within window [%d,%d)", m.Cursor, start, start+len(rows))
+	}
+
+	m.Cursor = 25
+	rows, start, _ = m.Window(10)
+	if m.Cursor < start || m.Cursor >= start+len(rows) {
+		t.Fatalf("cursor %d not within window [%d,%d)", m.Cursor, start, start+len(rows))
+	}
+
+	m.Cursor = 49
+	rows, start, _ = m.Window(10)
+	if m.Cursor < start || m.Cursor >= start+len(rows) {
+		t.Fatalf("cursor %d not within window [%d,%d)", m.Cursor, start, start+len(rows))
+	}
+	if start+len(rows) != 50 {
+		t.Fatalf("window does not reach the end: start=%d len=%d", start, len(rows))
+	}
+}
+
+func TestWindowReturnsEverythingWhenItFits(t *testing.T) {
+	m := New([]*tree.Node{chain("n1", "n2")})
+	rows, start, total := m.Window(10)
+	if start != 0 || total != 2 || len(rows) != 2 {
+		t.Fatalf("got rows=%d start=%d total=%d want 2,0,2", len(rows), start, total)
+	}
+}
+
+func TestFilterHumanHidesNonHumanRowsButKeepsForkStructure(t *testing.T) {
+	root := chain("n1")
+	root.Children = append(root.Children, &tree.Node{
+		Node:      adapter.Node{ID: "n2", Title: "tool call", Kind: adapter.KindToolCall},
+		SessionID: "s1",
+	})
+	leaf := &tree.Node{Node: adapter.Node{ID: "n3", Title: "human again", Kind: adapter.KindHuman}, SessionID: "s1"}
+	root.Children[0].Children = append(root.Children[0].Children, leaf)
+
+	m := New([]*tree.Node{root})
+	m.Filter = FilterHuman
+	got := ids(m.Rows())
+	want := []string{"n1", "n3"}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("got %v want %v: hidden node must still be descended into so its child is reachable", got, want)
+	}
+}
+
+func TestCycleFilterTogglesAndBack(t *testing.T) {
+	m := New([]*tree.Node{chain("n1")})
+	if m.Filter != FilterDefault {
+		t.Fatalf("default filter %v want FilterDefault", m.Filter)
+	}
+	m.CycleFilter()
+	if m.Filter != FilterHuman {
+		t.Fatalf("filter %v want FilterHuman", m.Filter)
+	}
+	m.CycleFilter()
+	if m.Filter != FilterDefault {
+		t.Fatalf("filter %v want FilterDefault", m.Filter)
+	}
+}
+
 func TestGraftedChildIndentsOneLevelInAScopedView(t *testing.T) {
 	s1 := chain("n1", "n2")
 	graftChain("s2", s1.Children[0], "m1")

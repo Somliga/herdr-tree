@@ -53,6 +53,16 @@ func renderRow(r Row, selected bool, currentSession string, width int) string {
 	if r.Node.Label != "" {
 		b.WriteString("★ " + r.Node.Label + "  ")
 	}
+	switch r.Node.Node.Kind {
+	case adapter.KindAssistant:
+		b.WriteString("assistant: ")
+	case adapter.KindToolCall:
+		// the label already carries its own brackets
+	default:
+		if !r.Node.IsSessionRoot {
+			b.WriteString("user: ")
+		}
+	}
 	title := r.Node.Node.Title
 	if title == "" && r.Node.Broken {
 		title = "transcript unreadable — metadata only"
@@ -266,6 +276,8 @@ func (u uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "a":
 			u.scopeAll = !u.scopeAll
 			u.rebuild()
+		case "f":
+			u.m.CycleFilter()
 		case "L":
 			n := u.m.Selected()
 			if n == nil || n.Node.ID == "" {
@@ -300,22 +312,31 @@ func (u uiModel) View() string {
 		return u.confirm + "\n"
 	}
 	var b strings.Builder
-	rows := u.m.Rows()
-	if len(rows) == 0 {
+	if len(u.m.Rows()) == 0 {
 		b.WriteString("No Claude sessions found for this directory.\n")
 	}
+	height := u.height - 4 // header, blank, footer, status
+	if height < 5 {
+		height = 5
+	}
+	rows, start, total := u.m.Window(height)
 	for i, r := range rows {
 		marker := "  "
-		if i == u.m.Cursor {
+		if start+i == u.m.Cursor {
 			marker = "> "
 		}
-		b.WriteString(marker + renderRow(r, i == u.m.Cursor, u.current, u.width-2) + "\n")
+		b.WriteString(marker + renderRow(r, start+i == u.m.Cursor, u.current, u.width-2) + "\n")
+	}
+	if total > 0 {
+		b.WriteString(fmt.Sprintf("\n(%d/%d)\n", u.m.Cursor+1, total))
+	} else {
+		b.WriteString("\n")
 	}
 	scope := "this session"
 	if u.scopeAll {
 		scope = "all sessions"
 	}
-	b.WriteString(fmt.Sprintf("\n↑↓ move  ←→ fold  ⏎ open  b branch  L label  a scope:%s  esc close\n", scope))
+	b.WriteString(fmt.Sprintf("↑↓ move  ←→ fold  ⏎ open  b branch  L label  a scope:%s  f filter:%s  esc close\n", scope, u.m.Filter))
 	if u.busy != "" {
 		b.WriteString(u.busy + "\n")
 	}

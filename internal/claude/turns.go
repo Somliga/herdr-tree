@@ -1,6 +1,7 @@
 package claude
 
 import (
+	"os"
 	"strings"
 
 	"herdr-tree/internal/adapter"
@@ -10,53 +11,19 @@ import (
 // session is resumed. It is not something the user typed.
 const syntheticResume = "Continue from where you left off."
 
-// machinery marks user entries that Claude Code writes around a slash
-// command — the caveat banner, the command name, its captured stdout. They
-// are real transcript content, so Select keeps them, but they are not turns
-// anyone would branch from and they crowd the top of almost every session.
-// Measured on this machine: 277 of 3664 rendered turns, 7.6%.
-var machinery = []string{
-	"<local-command-caveat",
-	"<command-name>",
-	"<command-message>",
-	"<local-command-stdout",
-	"<user-memory-input",
+func shortenHome(p string) string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" || !strings.HasPrefix(p, home) {
+		return p
+	}
+	return "~" + p[len(home):]
 }
 
-// IsPrompt reports whether an entry is a turn the user actually took.
+// IsPrompt reports whether an entry is something a human typed. Kept for
+// Select's asymmetry: the tree hides injected entries, the graft keeps them.
 func IsPrompt(e Entry) bool {
-	if e.Type() != "user" || e.IsSidechain() {
-		return false
-	}
-	if e.HasToolUseResult() || e.IsToolResult() {
-		return false
-	}
-	t := strings.TrimSpace(e.Text())
-	if t == syntheticResume {
-		return false
-	}
-	for _, m := range machinery {
-		if strings.HasPrefix(t, m) {
-			return false
-		}
-	}
-	return true
-}
-
-// Turns returns the session's user turns in file order.
-func Turns(es []Entry) []adapter.Node {
-	var out []adapter.Node
-	for _, e := range es {
-		if !IsPrompt(e) {
-			continue
-		}
-		out = append(out, adapter.Node{
-			ID:    e.UUID(),
-			Title: Title(e.Text(), 72),
-			At:    e.Timestamp(),
-		})
-	}
-	return out
+	k, keep := Classify(e, HasHumanOrigin([]Entry{e}))
+	return keep && k == adapter.KindHuman
 }
 
 // Title reduces text to one line of at most max runes, ellipsis included.

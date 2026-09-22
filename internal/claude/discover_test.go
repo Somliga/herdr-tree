@@ -136,8 +136,8 @@ func TestDiscoverGroupsByRepoRoot(t *testing.T) {
 	if s.CWD != repoDir {
 		t.Fatalf("cwd %q want %q", s.CWD, repoDir)
 	}
-	if len(s.Nodes) != 2 {
-		t.Fatalf("nodes %d want 2", len(s.Nodes))
+	if len(s.Nodes) != 4 {
+		t.Fatalf("nodes %d want 4", len(s.Nodes))
 	}
 	if s.Title != "Fixture session" {
 		t.Fatalf("title %q", s.Title)

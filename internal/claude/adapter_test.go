@@ -35,7 +35,7 @@ func TestAdapterBranchWritesNewSession(t *testing.T) {
 	}
 	src := sessions[0]
 
-	sid, err := New().Branch(src, src.Nodes[1].ID, repoDir)
+	sid, err := New().Branch(src, src.Nodes[2].ID, repoDir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +53,7 @@ func TestAdapterPreviewCountsWhatIsCarried(t *testing.T) {
 
 	sessions, _ := New().Discover(repoDir)
 	src := sessions[0]
-	turns, entries, size, err := New().Preview(src, src.Nodes[1].ID)
+	turns, entries, size, err := New().Preview(src, src.Nodes[2].ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,10 +106,10 @@ func TestAdapterReadsViaTheDiscoveredPath(t *testing.T) {
 	if len(sessions) != 1 {
 		t.Fatalf("sessions %d want 1", len(sessions))
 	}
-	if _, _, _, err := New().Preview(sessions[0], sessions[0].Nodes[1].ID); err != nil {
+	if _, _, _, err := New().Preview(sessions[0], sessions[0].Nodes[2].ID); err != nil {
 		t.Fatalf("Preview could not read a relocated session: %v", err)
 	}
-	if _, err := New().Branch(sessions[0], sessions[0].Nodes[1].ID, repoDir); err != nil {
+	if _, err := New().Branch(sessions[0], sessions[0].Nodes[2].ID, repoDir); err != nil {
 		t.Fatalf("Branch could not read a relocated session: %v", err)
 	}
 }

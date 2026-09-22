@@ -4,10 +4,32 @@ package adapter
 
 import "time"
 
+// Kind is what produced an entry. Universal across agents: a human typed it,
+// the model said it, or the model called a tool.
+type Kind int
+
+const (
+	KindHuman Kind = iota
+	KindAssistant
+	KindToolCall
+)
+
+func (k Kind) String() string {
+	switch k {
+	case KindAssistant:
+		return "assistant"
+	case KindToolCall:
+		return "tool"
+	default:
+		return "user"
+	}
+}
+
 // Node is one conversation turn.
 type Node struct {
 	ID    string // stable id of the turn within its session
 	Title string // single-line label, already truncated
+	Kind  Kind
 	At    time.Time
 }
 

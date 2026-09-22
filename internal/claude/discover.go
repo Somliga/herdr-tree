@@ -152,7 +152,7 @@ func Discover(repoRoot string) ([]adapter.Session, error) {
 			Path:    p,
 			Title:   SessionTitle(es),
 			Updated: updated,
-			Nodes:   Turns(es),
+			Nodes:   Entries(es),
 			// A skipped line means the chain may have holes. Surface it as ⚠
 			// rather than rendering a partial conversation as if complete.
 			Broken: skipped > 0,

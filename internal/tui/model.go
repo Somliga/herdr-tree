@@ -2,7 +2,10 @@
 // separate from rendering so it can be tested as plain functions.
 package tui
 
-import "herdr-tree/internal/tree"
+import (
+	"herdr-tree/internal/adapter"
+	"herdr-tree/internal/tree"
+)
 
 type Row struct {
 	Node        *tree.Node
@@ -11,12 +14,82 @@ type Row struct {
 	Folded      bool
 }
 
+// Filter is which kinds of entry are shown. Pi's lesson: filtering is a TREE
+// operation, not row hiding — a hidden node's children re-parent onto its
+// nearest visible ancestor, so the fork structure between surviving rows
+// stays intact. Rows() already descends through hidden nodes at the parent's
+// depth, which is that re-parenting.
+type Filter int
+
+const (
+	FilterDefault Filter = iota // prompts, replies and tool calls
+	FilterHuman                 // only what a person typed
+)
+
+func (f Filter) String() string {
+	if f == FilterHuman {
+		return "human"
+	}
+	return "all"
+}
+
 type Model struct {
 	Roots  []*tree.Node
 	Cursor int
 	Folded map[*tree.Node]bool
+	Filter Filter
 
 	parent map[*tree.Node]*tree.Node
+}
+
+func (m *Model) CycleFilter() {
+	was := m.Selected()
+	m.Filter = (m.Filter + 1) % 2
+	if was == nil {
+		return
+	}
+	for i, r := range m.Rows() {
+		if r.Node == was {
+			m.Cursor = i
+			return
+		}
+	}
+	m.clamp()
+}
+
+func (m *Model) shows(n *tree.Node) bool {
+	if n.IsSessionRoot {
+		return true
+	}
+	if m.Filter == FilterHuman {
+		return n.Node.Kind == adapter.KindHuman
+	}
+	return true
+}
+
+// Window returns the slice of rows to draw for a viewport of the given
+// height, the index it starts at, and the total. The selection is pinned
+// near the middle once it has travelled that far, so holding an arrow
+// scrolls the list rather than running the cursor off the edge — Pi computes
+// its start index per render from the selection alone, with no stored scroll
+// offset, and so does this.
+func (m *Model) Window(height int) ([]Row, int, int) {
+	rows := m.Rows()
+	if height < 1 {
+		height = 1
+	}
+	if len(rows) <= height {
+		return rows, 0, len(rows)
+	}
+	half := height / 2
+	start := m.Cursor - half
+	if start < 0 {
+		start = 0
+	}
+	if start > len(rows)-height {
+		start = len(rows) - height
+	}
+	return rows[start : start+height], start, len(rows)
 }
 
 // New indexes each node's parent so Fold can jump upward.
@@ -102,11 +175,14 @@ func (m *Model) Rows() []Row {
 		}
 		visited[n] = true
 		folded := m.Folded[n]
-		out = append(out, Row{
-			Node: n, Depth: depth,
-			HasChildren: len(n.Children) > 0,
-			Folded:      folded,
-		})
+		shown := m.shows(n)
+		if shown {
+			out = append(out, Row{
+				Node: n, Depth: depth,
+				HasChildren: len(n.Children) > 0,
+				Folded:      folded,
+			})
+		}
 		if folded {
 			return
 		}
