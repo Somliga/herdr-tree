@@ -43,12 +43,17 @@ func TestRenderRowStaysUnstyled(t *testing.T) {
 
 func TestEveryColouredDistinctionAlsoHasAGlyph(t *testing.T) {
 	// Colour is lost on copy, in logs, and against a clashing theme.
+	//
+	// The summary titles here are realistic on purpose. The ⤶ and the word
+	// that follows it come from the entry's own first line — Classify only
+	// assigns these kinds when that prefix is present — so a synthetic title
+	// like "x" would test a carrier that does not exist in any real row.
 	for _, c := range []struct {
 		n     *tree.Node
 		glyph string
 	}{
-		{&tree.Node{Node: adapter.Node{Kind: adapter.KindSummaryImport, Title: "x"}}, "⤶"},
-		{&tree.Node{Node: adapter.Node{Kind: adapter.KindSummaryCompaction, Title: "x"}}, "⤶"},
+		{&tree.Node{Node: adapter.Node{Kind: adapter.KindSummaryImport, Title: "⤶ summary of f2af34a4"}}, "⤶ summary of"},
+		{&tree.Node{Node: adapter.Node{Kind: adapter.KindSummaryCompaction, Title: "⤶ compacted t3..t9"}}, "⤶ compacted"},
 		{&tree.Node{Broken: true, IsSessionRoot: true, SessionID: "s"}, "⚠"},
 	} {
 		text, _ := renderRow(Row{Node: c.n}, false, "", 80)
@@ -83,5 +88,21 @@ func TestCurrentTipIsStyledAndMarked(t *testing.T) {
 	broken := &tree.Node{Node: adapter.Node{ID: "n9"}, SessionID: "sid-a", IsSessionLeaf: true, Broken: true}
 	if _, key := renderRow(Row{Node: broken}, false, "sid-a", 80); key != StyleBroken {
 		t.Fatalf("a broken tip styled %v, want StyleBroken", key)
+	}
+}
+
+// The ⤶ comes from the entry's own text, so the renderer must not add a
+// second one. Synthetic titles in other tests never collide with the real
+// prefix, which is how "⤶ ⤶ summary of …" reached a real screen.
+func TestSummaryRowCarriesExactlyOneMarker(t *testing.T) {
+	for _, kind := range []adapter.Kind{adapter.KindSummaryImport, adapter.KindSummaryCompaction} {
+		n := &tree.Node{
+			Node:      adapter.Node{ID: "n1", Kind: kind, Title: "⤶ summary of f2af34a4 — redis-backed sessions"},
+			SessionID: "s",
+		}
+		text, _ := renderRow(Row{Node: n}, false, "", 120)
+		if got := strings.Count(text, "⤶"); got != 1 {
+			t.Fatalf("kind %v rendered %d markers, want 1: %q", kind, got, text)
+		}
 	}
 }

@@ -60,7 +60,10 @@ func renderRow(r Row, selected bool, currentSession string, width int) (string, 
 	case adapter.KindToolCall:
 		// the label already carries its own brackets
 	case adapter.KindSummaryImport, adapter.KindSummaryCompaction:
-		b.WriteString("⤶ ")
+		// No prefix here: the title IS the seed's first line, which begins
+		// with ⤶ by construction — Classify only assigns these kinds when
+		// that prefix is present, and GraftSeeded refuses a seed without it.
+		// Prepending another produced "⤶ ⤶ summary of …".
 	default:
 		if !r.Node.IsSessionRoot {
 			b.WriteString("user: ")
