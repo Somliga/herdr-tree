@@ -119,3 +119,36 @@ func TestRefusesArgumentsThatWouldBeReadAsFlags(t *testing.T) {
 		t.Fatalf("AgentStart empty: got %v want ErrUnsafeArgument", err)
 	}
 }
+
+func TestAgentPromptArgv(t *testing.T) {
+	got := strings.Join(agentPromptArgv("tree-60c5b417-wap2", "⤶ summary of abc\n\ntext"), "\u0000")
+	want := strings.Join([]string{"agent", "prompt", "tree-60c5b417-wap2", "⤶ summary of abc\n\ntext", "--wait", "--timeout", "120000"}, "\u0000")
+	if got != want {
+		t.Fatalf("\n got %q\nwant %q", got, want)
+	}
+}
+
+func TestAgentPromptRefusesFlagShapedAgentName(t *testing.T) {
+	if err := AgentPrompt("-x", "hello"); !errors.Is(err, ErrUnsafeArgument) {
+		t.Fatalf("got %v want ErrUnsafeArgument", err)
+	}
+}
+
+func TestAgentPromptRefusesEmptyText(t *testing.T) {
+	if err := AgentPrompt("tree-a", "   "); err == nil {
+		t.Fatal("sending an empty message to an agent is never intended")
+	}
+}
+
+func TestBlockedAgentIsDistinguishable(t *testing.T) {
+	err := classifyAgentError([]byte(`{"error":{"code":"agent_blocked","message":"agent is at an approval dialog"}}`))
+	if !errors.Is(err, ErrAgentBlocked) {
+		t.Fatalf("got %v want ErrAgentBlocked", err)
+	}
+	if classifyAgentError([]byte(`{"error":{"code":"something_else"}}`)) == nil {
+		t.Fatal("a non-blocked error is still an error")
+	}
+	if classifyAgentError([]byte(`{"result":{}}`)) != nil {
+		t.Fatal("a success is not an error")
+	}
+}

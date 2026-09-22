@@ -26,6 +26,11 @@ const timeout = 45 * time.Second
 // the only correct move is to refuse it.
 var ErrUnsafeArgument = errors.New("value would be read as a flag")
 
+// ErrAgentBlocked means the agent is at an approval or question dialog and
+// will not accept input. The caller must surface this rather than fall back to
+// grafting: the user asked to continue a conversation, not to fork one.
+var ErrAgentBlocked = errors.New("agent is waiting for input of its own")
+
 func checkArg(what, v string) error {
 	if v == "" {
 		return fmt.Errorf("%s is empty: %w", what, ErrUnsafeArgument)
@@ -59,6 +64,10 @@ func openTreePaneArgv(cwd string) []string {
 	return []string{"plugin", "pane", "open",
 		"--plugin", "herdr-tree", "--entrypoint", "tree",
 		"--placement", "overlay", "--cwd", cwd}
+}
+
+func agentPromptArgv(agent, text string) []string {
+	return []string{"agent", "prompt", agent, text, "--wait", "--timeout", "120000"}
 }
 
 func run(args ...string) ([]byte, error) {
@@ -174,4 +183,43 @@ func OpenTreePane(cwd string) error {
 	}
 	_, err := run(openTreePaneArgv(cwd)...)
 	return err
+}
+
+// classifyAgentError turns herdr's JSON error into a sentinel where we have
+// one. A body with no error object is not an error.
+func classifyAgentError(b []byte) error {
+	var r struct {
+		Error *struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(b, &r) != nil || r.Error == nil {
+		return nil
+	}
+	if r.Error.Code == "agent_blocked" {
+		return ErrAgentBlocked
+	}
+	return fmt.Errorf("herdr: %s: %s", r.Error.Code, r.Error.Message)
+}
+
+// AgentPrompt sends text to a running agent as if typed. A successful return
+// means herdr accepted and delivered the message; it does not mean the agent
+// has started, let alone finished, a turn on it.
+//
+// text is deliberately NOT passed through checkArg: a summary legitimately
+// begins with "⤶", and it is a positional argument after the agent name, not
+// a flag position.
+func AgentPrompt(agent, text string) error {
+	if err := checkArg("agent name", agent); err != nil {
+		return err
+	}
+	if strings.TrimSpace(text) == "" {
+		return errors.New("refusing to send an empty message")
+	}
+	out, err := run(agentPromptArgv(agent, text)...)
+	if err != nil {
+		return err
+	}
+	return classifyAgentError(out)
 }
