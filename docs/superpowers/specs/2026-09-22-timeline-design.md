@@ -77,6 +77,13 @@ could still resume* — and it is what makes rewinding safe to do casually.
 On demand, never automatically, and over a **range of turns** rather than a
 whole session.
 
+Where a summary is needed and none exists, the tree **offers** to make one; it
+never makes one unprompted and never refuses to proceed. Choosing to fold a
+branch back that has not been summarised leads to the summarise step, with its
+cost shown, and the user can decline and do something else. Forcing the user to
+summarise first as a separate ritual would be pedantry; summarising silently
+would spend their money without asking.
+
 `s` on a row fixes the END of the range — the work you have just finished is
 almost always what you want summarised, and it is where you already are. The
 cursor then moves to choose the START, with the range highlighted as you move.
@@ -129,6 +136,34 @@ and the injected text present. The model answered a question that required each.
 
 That the two operations are the same mechanism is the strongest evidence the
 model is right, and it means §5 is mostly UI over §3.
+
+### Choosing where it lands
+
+Folding a summary back asks two things: which summary, and where it goes. The
+destination defaults to **the end of the parent** — carry on from where you
+are, now knowing what the branch found — and that is the common case. You can
+also pick any earlier turn in the parent, which rewinds it as well as seeding
+it.
+
+Those two destinations want different mechanisms, and using the natural one for
+each matters:
+
+**At the parent's end, when the parent is the live session.** The summary is
+simply your next message. Herdr can deliver it: `herdr agent prompt <agent>
+"<summary>"` sends text to the running agent as if typed. No graft, no copy, no
+new session — the summary becomes the next turn of the conversation you are
+already in. Given a transcript here is already 6.6 MB, copying one per fold-back
+to achieve what a single message achieves would be indefensible.
+
+**Anywhere else** — an earlier turn, or a parent that is not live — is
+rewind-plus-seed as described in §5. A graft is genuinely needed there, because
+the timeline is changing shape.
+
+The first case has a precondition: the agent must be able to accept input.
+Herdr reports `agent_blocked` when an agent is sitting at an approval or
+question dialog, and refuses to send. The tree must surface that rather than
+appear to succeed — and must not fall back to grafting silently, because the
+user asked to continue a conversation, not to fork one.
 
 ## 5b. Cascading fold-back
 
@@ -257,16 +292,24 @@ every one of those assertions fight escape sequences.
 
 ## 10. Open questions
 
-1. **Does the trunk need to be visually obvious, or is position enough?** The
-   trunk is at depth 0 and branches are indented, which may be sufficient
-   without any marker.
-1b. **Range selection direction.** `s` fixes the end and the cursor picks the
+**Settled during review:**
+
+- The trunk needs no marker. Depth 0 against indented branches is enough.
+- Summarising is always offered, never forced and never silent.
+- Fold-back destination defaults to the end of the parent, with any earlier
+  turn selectable.
+
+**Still open:**
+
+1. **Range selection direction.** `s` fixes the end and the cursor picks the
    start, which means moving backwards through the list. That matches how the
    thought arrives — "summarise what I just did" — but it is the opposite of
    how most range selections work. Worth trying before committing.
-2. **Should appending a summary offer to summarise first** if the chosen branch
-   has none, or refuse and make the user do it explicitly? Offering is fewer
-   keystrokes; refusing keeps every API call deliberate.
-3. **What happens to a branch once its summary is folded back?** Nothing is
+2. **What happens to a branch once its summary is folded back?** Nothing is
    forced. But a branch whose summary has been appended somewhere is in a
    different state from one that has not, and the tree could say so.
+3. **Does `herdr agent prompt` deliver reliably enough to depend on?** It
+   honours bracketed paste and reports submission, but the Herdr documentation
+   is explicit that successful submission does not prove the agent started a
+   turn. A multi-paragraph summary is a large paste. This needs testing against
+   a real agent before the tip-append path is trusted.
