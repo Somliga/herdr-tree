@@ -208,3 +208,17 @@ func TestBlockedAgentIsDistinguishable(t *testing.T) {
 		t.Fatal("a success is not an error")
 	}
 }
+
+// A message beginning with a dash would be parsed as a flag and quoted back
+// in herdr's own stderr, which then becomes our error string. Neither this
+// refusal nor anything downstream may repeat the message.
+func TestAgentPromptRefusesFlagShapedMessageWithoutEchoingIt(t *testing.T) {
+	secret := "-x the user's private conversation text"
+	err := AgentPrompt("tree-abc", secret)
+	if !errors.Is(err, ErrUnsafeArgument) {
+		t.Fatalf("got %v, want ErrUnsafeArgument", err)
+	}
+	if strings.Contains(err.Error(), "private conversation") {
+		t.Fatalf("the refusal echoed the message: %q", err)
+	}
+}

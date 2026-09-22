@@ -238,6 +238,13 @@ func AgentPrompt(agent, text string) error {
 	if strings.TrimSpace(text) == "" {
 		return errors.New("refusing to send an empty message")
 	}
+	// The message sits before --wait in the argv, so a leading dash is read
+	// as a flag: herdr would reject it AND quote it back in its own stderr,
+	// putting conversation content in an error string. checkArg cannot be
+	// used here — it echoes the value it rejects.
+	if strings.HasPrefix(text, "-") {
+		return fmt.Errorf("message begins with a dash: %w", ErrUnsafeArgument)
+	}
 	out, err := run(agentPromptArgv(agent, text)...)
 	if err != nil {
 		// herdr reports its errors (including agent_blocked) as JSON on
