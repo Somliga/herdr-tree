@@ -70,4 +70,5 @@ type Adapter interface {
 	Branch(src Session, atNode, dstCWD string) (newSessionID string, err error)
 	BranchSeeded(src Session, atNode, dstCWD, seed string) (newSessionID string, err error)
 	Resume(sessionID, cwd string) error
+	Summarise(src Session, fromTurn, toTurn string) (string, error)
 }

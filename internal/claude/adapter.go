@@ -74,6 +74,10 @@ func (claudeAdapter) BranchSeeded(src adapter.Session, atNode, dstCWD, seed stri
 	return sid, err
 }
 
+func (claudeAdapter) Summarise(src adapter.Session, fromTurn, toTurn string) (string, error) {
+	return Summarise(sourcePath(src), fromTurn, toTurn, src.CWD)
+}
+
 // agentName builds a Herdr agent name for a session in a pane.
 //
 // It includes the pane because Herdr requires live agent names to be unique,

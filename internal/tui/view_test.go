@@ -79,6 +79,9 @@ func (f fakeAdapter) BranchSeeded(adapter.Session, string, string, string) (stri
 	return "new-sid", nil
 }
 func (f fakeAdapter) Resume(string, string) error { return f.resumeErr }
+func (f fakeAdapter) Summarise(adapter.Session, string, string) (string, error) {
+	return "a summary", nil
+}
 
 func TestFailedResumeKeepsTheOverlayOpen(t *testing.T) {
 	// Bubble Tea discards its final frame when leaving the alt screen, so a
