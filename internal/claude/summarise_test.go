@@ -26,7 +26,7 @@ func TestSummarisePromptNamesBothEnds(t *testing.T) {
 	}
 }
 
-// stubClaude puts a fake `claude` first on PATH. It exercises the real
+//	stubClaude puts a fake `claude` first on PATH. It exercises the real
 // subprocess plumbing — argv, stdin, the timeout, and the removal of the
 // throwaway session — without spending an API call. Everything about the
 // REPLY still needs Task 10; everything around it does not.
@@ -162,5 +162,47 @@ func TestSummariseErrorDoesNotRepeatTheTurnTitles(t *testing.T) {
 		if strings.Contains(err.Error(), leaked) {
 			t.Fatalf("the error repeated a turn title %q: %v", leaked, err)
 		}
+	}
+}
+
+// tmpCWD is fresh per call, so its project slug is fresh per call: leaving the
+// directory behind deposits one more empty dir in the user's ~/.claude/projects
+// every single time they summarise.
+func TestSummariseLeavesNoProjectDirectoryBehind(t *testing.T) {
+	projects := t.TempDir()
+	t.Setenv("CLAUDE_PROJECTS_DIR", projects)
+	stubClaude(t, `echo "attempted: x"`)
+
+	for i := 0; i < 3; i++ {
+		if _, err := Summarise("testdata/simple.jsonl", "u1", "u3", t.TempDir()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	left, err := os.ReadDir(projects)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(left) != 0 {
+		var names []string
+		for _, e := range left {
+			names = append(names, e.Name())
+		}
+		t.Fatalf("three summaries left %d project directories behind: %v", len(left), names)
+	}
+}
+
+// Claude Code creates an empty memory/ inside a project directory, which is
+// why the cleanup removes it first: os.Remove refuses a non-empty directory,
+// so without that the project dir would survive every time.
+func TestSummariseRemovesTheProjectDirEvenWithAMemoryDir(t *testing.T) {
+	projects := t.TempDir()
+	t.Setenv("CLAUDE_PROJECTS_DIR", projects)
+	cwd := t.TempDir()
+	 stubClaude(t, `mkdir -p `+filepath.Join(projects, SlugFor(cwd), "memory")+`; echo ok`)
+	if _, err := Summarise("testdata/simple.jsonl", "u1", "u3", cwd); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(projects, SlugFor(cwd))); !os.IsNotExist(err) {
+		t.Fatalf("the project directory survived: %v", err)
 	}
 }

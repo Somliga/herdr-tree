@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -62,7 +63,20 @@ func Summarise(srcPath, fromTurn, toTurn, tmpCWD string) (string, error) {
 	// created moments ago, for this call alone, and nothing else can have
 	// learned of it. Registered only once Graft has succeeded, so a failure
 	// above never reaches this line with a zero-value path.
-	defer os.Remove(path)
+	//
+	// The project DIRECTORY goes too. tmpCWD is fresh per call, so its slug is
+	// fresh per call, and leaving it behind would deposit one more empty
+	// directory in the user's ~/.claude/projects every time they summarise —
+	// unbounded, and in the place their own sessions live. os.Remove refuses a
+	// non-empty directory, so this can never take anything with it. Claude
+	// Code also creates an empty memory/ inside a project; v1's graft
+	// verification found that one the hard way.
+	defer func() {
+		os.Remove(path)
+		dir := filepath.Dir(path)
+		os.Remove(filepath.Join(dir, "memory"))
+		os.Remove(dir)
+	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), summariseTimeout)
 	defer cancel()
