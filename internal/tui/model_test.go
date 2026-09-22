@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"strings"
 	"fmt"
 	"testing"
 	"time"
@@ -702,5 +703,44 @@ func TestRangeGoesInactiveWhenItsEndIsRebuilt(t *testing.T) {
 		if r.InRange {
 			t.Fatalf("no row should be marked in-range against a stale end: %+v", r)
 		}
+	}
+}
+
+// The cursor moving PAST the fixed end takes the other branch of the span
+// lookup, and nothing exercised it: making that branch unreachable left the
+// whole suite green. The live effect of getting it wrong is from > to, so the
+// marking loop never runs and a range highlights nothing at all.
+func TestRangeMarksTheSameRowsWithTheCursorOnEitherSide(t *testing.T) {
+	m := New([]*tree.Node{chain("t1", "t2", "t3", "t4", "t5")})
+	for m.Rows()[0].Folded {
+		m.Unfold()
+	}
+	marked := func(anchor, cursor int) []string {
+		m.CancelRange()
+		m.Cursor = anchor
+		m.BeginRange()
+		m.Cursor = cursor
+		var ids []string
+		for _, r := range m.Rows() {
+			if r.InRange {
+				ids = append(ids, r.Node.Node.ID)
+			}
+		}
+		return ids
+	}
+	down := marked(1, 3) // end fixed above, cursor swept down
+	up := marked(3, 1)   // end fixed below, cursor swept up
+	if len(down) == 0 {
+		t.Fatal("sweeping downwards marked nothing")
+	}
+	if strings.Join(down, ",") != strings.Join(up, ",") {
+		t.Fatalf("direction changed the range: down %v up %v", down, up)
+	}
+	from, to, ok := m.RangeSpan()
+	if !ok || from == nil || to == nil {
+		t.Fatal("a range spanning upwards must still resolve")
+	}
+	if from == to {
+		t.Fatal("a three-row span collapsed to one node")
 	}
 }

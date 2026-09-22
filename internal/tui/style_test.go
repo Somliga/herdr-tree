@@ -137,3 +137,32 @@ func TestSummaryRowCarriesExactlyOneMarker(t *testing.T) {
 		}
 	}
 }
+
+// A range takes the colour slot only from rows whose colour is decorative.
+// The two summary colours are the sole at-a-glance difference between
+// "knowledge arrived here" and "this line contracted", so a range sweeping
+// over an earlier summary must not flatten them — the ┃ already says ranged.
+func TestARangeDoesNotTakeTheColourOfARowThatNeedsIt(t *testing.T) {
+	for _, c := range []struct {
+		kind adapter.Kind
+		want StyleKey
+	}{
+		{adapter.KindSummaryImport, StyleImport},
+		{adapter.KindSummaryCompaction, StyleCompaction},
+		{adapter.KindHuman, StyleRange},
+		{adapter.KindAssistant, StyleRange},
+	} {
+		n := &tree.Node{Node: adapter.Node{ID: "n1", Kind: c.kind, Title: "⤶ summary of abc"}, SessionID: "s"}
+		text, key := renderRow(Row{Node: n, InRange: true}, false, "", 120)
+		if key != c.want {
+			t.Fatalf("kind %v in a range styled %v, want %v", c.kind, key, c.want)
+		}
+		if !strings.Contains(text, "┃") {
+			t.Fatalf("kind %v lost the range glyph: %q", c.kind, text)
+		}
+	}
+	broken := &tree.Node{Node: adapter.Node{ID: "n1"}, SessionID: "s", Broken: true}
+	if _, key := renderRow(Row{Node: broken, InRange: true}, false, "", 120); key != StyleBroken {
+		t.Fatalf("broken in a range styled %v, want StyleBroken", key)
+	}
+}

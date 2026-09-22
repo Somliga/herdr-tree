@@ -91,9 +91,16 @@ func renderRow(r Row, selected bool, currentSession string, width int) (string, 
 	}
 	key := styleFor(r.Node, currentTip)
 	// A range in progress is the thing the user is actively manipulating, so
-	// it outranks the row's ordinary kind colour and even the current-tip
-	// marker — but not Broken, which is data integrity and always wins.
-	if r.InRange && key != StyleBroken {
+	// it takes the colour slot from rows whose colour is only decorative.
+	// It does NOT take it from a row whose colour is carrying something:
+	// Broken is data integrity, and the two summary colours are the only
+	// thing separating "knowledge arrived" from "this line contracted" at a
+	// glance. Those rows stay themselves; the ┃ still marks them as ranged,
+	// which is precisely why §6b insists the glyph exists.
+	switch {
+	case !r.InRange:
+	case key == StyleBroken, key == StyleImport, key == StyleCompaction:
+	default:
 		key = StyleRange
 	}
 	return line, key
@@ -137,8 +144,14 @@ func (u *uiModel) rebuild() {
 			roots = scoped
 		}
 	}
+	rangeEnd := u.m.RangeEnd
 	u.m = New(roots)
 	u.m.SetTrunk(tree.Trunk(u.roots, u.current))
+	// tree.Build runs once, in Run, so a scope toggle re-roots the SAME
+	// nodes — the range's end is still a live pointer and there is no reason
+	// to throw the user's in-progress selection away. If the new scope does
+	// not contain it, RangeSpan reports ok=false on its own.
+	u.m.RangeEnd = rangeEnd
 	if was == nil {
 		return
 	}

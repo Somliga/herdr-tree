@@ -300,3 +300,29 @@ func TestBKeyNoLongerBranches(t *testing.T) {
 		t.Fatal("b must no longer open the confirmation")
 	}
 }
+
+// Toggling scope mid-selection used to discard the range silently, with the
+// very same nodes still on screen: tree.Build runs once, in Run, so a scope
+// toggle re-roots the SAME pointers. No test drove the real rebuild() path
+// with a range active — the one that claimed to build two independent trees
+// and cross-assigned their nodes, which rebuild() cannot produce.
+func TestScopeToggleKeepsAnActiveRange(t *testing.T) {
+	roots := tree.Build([]adapter.Session{
+		{ID: "s1", Nodes: []adapter.Node{{ID: "t1", Title: "one"}, {ID: "t2", Title: "two"}, {ID: "t3", Title: "three"}}},
+	}, &store.Store{Version: 1, Branches: map[string]store.Branch{}})
+
+	u := uiModel{m: New(roots), roots: roots, current: "s1", scopeAll: true}
+	for u.m.Rows()[0].Folded {
+		u.m.Unfold()
+	}
+	u.m.Cursor = 1
+	u.m.BeginRange()
+	end := u.m.RangeEnd
+
+	u.scopeAll = false
+	u.rebuild()
+
+	if u.m.RangeEnd != end {
+		t.Fatalf("a scope toggle discarded the in-progress range: %v", u.m.RangeEnd)
+	}
+}
