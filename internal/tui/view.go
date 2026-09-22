@@ -380,11 +380,15 @@ func foldBackCmd(a adapter.Adapter, st *store.Store, at *tree.Node, dst string, 
 	}
 }
 
-// agentFor is the live agent to send to when appending at n, and "" when
-// there is none. Only the tip of the session the user is actually in can take
-// a message; every other leaf belongs to a session nobody is holding, and a
-// name for the wrong session would deliver the summary into someone else's
-// conversation.
+// agentFor is the target to send to when appending at n, and "" when there is
+// none.
+//
+// The two halves answer different questions. u.liveAgent, resolved by
+// cmd/herdr-tree against herdr's live agent list, answers "is anything
+// holding the session the user is in, and where". This guard answers "is n
+// part of THAT session": other sessions in the forest are often live in other
+// panes, and appending at one of their turns must not be delivered into
+// whichever conversation the user happens to be sitting in.
 func (u uiModel) agentFor(n *tree.Node) string {
 	if n.SessionID != "" && n.SessionID == u.current {
 		return u.liveAgent

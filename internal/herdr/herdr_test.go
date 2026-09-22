@@ -248,3 +248,87 @@ func TestRunTimeoutOmitsArgvContent(t *testing.T) {
 		t.Fatalf("the timeout error leaked the message: %q", err)
 	}
 }
+
+// realAgentList is herdr's own `agent list` output, captured from a live
+// session with four agents running — two of them in this repo.
+func realAgentList(t *testing.T) []byte {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join("testdata", "agent-list.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+func TestParseAgentListMapsSessionsToTheirPanes(t *testing.T) {
+	got, err := parseAgentList(realAgentList(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 4 {
+		t.Fatalf("got %d live agents, want the fixture's 4: %v", len(got), got)
+	}
+	// The plugin's own repo has two, in different panes; resolving to the
+	// wrong one sends a summary into the wrong conversation.
+	if got["bdf6207b-7062-4f33-93c4-e86a0b3b438d"] != "wA:p1" {
+		t.Fatalf("session bdf6207b resolved to %q, want wA:p1", got["bdf6207b-7062-4f33-93c4-e86a0b3b438d"])
+	}
+	if got["684ae569-5d55-4e07-90a3-341117c819df"] != "wA:pY" {
+		t.Fatalf("session 684ae569 resolved to %q, want wA:pY", got["684ae569-5d55-4e07-90a3-341117c819df"])
+	}
+	// and one in another repo entirely
+	if got["448ae587-f274-43c9-ae32-b96f883b5e08"] != "wE:p1" {
+		t.Fatalf("session 448ae587 resolved to %q, want wE:p1", got["448ae587-f274-43c9-ae32-b96f883b5e08"])
+	}
+}
+
+// agent_session.value is the last session id OBSERVED in a pane, and v1 saw a
+// headless run overwrite one. Two panes claiming the same session is therefore
+// reachable, and there is no right answer: pick one and the summary lands in a
+// conversation the user was not looking at.
+func TestAnAmbiguousSessionResolvesToNoAgent(t *testing.T) {
+	dup := strings.Replace(string(realAgentList(t)),
+		"97b3d58d-4888-4dcf-affe-7b12cbf2d246",
+		"bdf6207b-7062-4f33-93c4-e86a0b3b438d", 1)
+
+	got, err := parseAgentList([]byte(dup))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target, ok := got["bdf6207b-7062-4f33-93c4-e86a0b3b438d"]; ok {
+		t.Fatalf("a session held by two panes resolved to %q", target)
+	}
+	if got["684ae569-5d55-4e07-90a3-341117c819df"] != "wA:pY" {
+		t.Fatal("the unambiguous agents were dropped too")
+	}
+}
+
+func TestAgentListArgv(t *testing.T) {
+	if got := strings.Join(agentListArgv(), " "); got != "agent list" {
+		t.Fatalf("argv %q", got)
+	}
+}
+
+func TestAgentForSessionResolvesAndReportsAbsence(t *testing.T) {
+	stubHerdr(t, "cat "+filepath.Join("testdata", "agent-list.json"))
+
+	got, err := AgentForSession("684ae569-5d55-4e07-90a3-341117c819df")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "wA:pY" {
+		t.Fatalf("target %q, want wA:pY", got)
+	}
+
+	_, err = AgentForSession("11111111-2222-3333-4444-555555555555")
+	if !errors.Is(err, ErrNoLiveAgent) {
+		t.Fatalf("a session nobody is holding: got %v, want ErrNoLiveAgent", err)
+	}
+}
+
+func TestAgentForSessionRefusesAFlagShapedSessionId(t *testing.T) {
+	stubHerdr(t, "echo should-not-run; exit 1")
+	if _, err := AgentForSession("-x"); !errors.Is(err, ErrUnsafeArgument) {
+		t.Fatalf("got %v, want ErrUnsafeArgument", err)
+	}
+}

@@ -69,6 +69,10 @@ func openTreePaneArgv(cwd string) []string {
 		"--placement", "overlay", "--cwd", cwd}
 }
 
+func agentListArgv() []string {
+	return []string{"agent", "list"}
+}
+
 func agentPromptArgv(agent, text string) []string {
 	return []string{"agent", "prompt", agent, text, "--wait", "--timeout", "120000"}
 }
@@ -225,6 +229,77 @@ func classifyAgentError(b []byte) error {
 		return ErrAgentBlocked
 	}
 	return fmt.Errorf("herdr: %s: %s", r.Error.Code, r.Error.Message)
+}
+
+// ErrNoLiveAgent means no agent herdr knows about is holding that session, so
+// there is no conversation to continue. The caller grafts instead.
+var ErrNoLiveAgent = errors.New("no live agent holds that session")
+
+type agentListResp struct {
+	Result struct {
+		Agents []struct {
+			PaneID       string `json:"pane_id"`
+			AgentSession *struct {
+				Value string `json:"value"`
+			} `json:"agent_session"`
+		} `json:"agents"`
+	} `json:"result"`
+}
+
+// parseAgentList maps each live agent's session id to the PANE holding it.
+//
+// The pane, not the agent's name: herdr accepts either wherever it wants an
+// agent, only some agents carry a name at all (the ones herdr-tree started
+// do; a claude the user launched need not), and a pane id is unique by
+// construction while a name is only unique among live agents.
+//
+// A session claimed by two panes is dropped rather than resolved to one of
+// them. `agent_session.value` is the last session id OBSERVED in a pane, and
+// v1 recorded a headless `-p --resume` silently overwriting it, so two panes
+// reporting the same session is reachable — and guessing there would deliver
+// a summary into a conversation the user was not looking at.
+func parseAgentList(b []byte) (map[string]string, error) {
+	var r agentListResp
+	if err := json.Unmarshal(b, &r); err != nil {
+		return nil, err
+	}
+	out := map[string]string{}
+	ambiguous := map[string]bool{}
+	for _, a := range r.Result.Agents {
+		if a.PaneID == "" || a.AgentSession == nil || a.AgentSession.Value == "" {
+			continue // an agent still starting has no session yet
+		}
+		sid := a.AgentSession.Value
+		if _, seen := out[sid]; seen {
+			ambiguous[sid] = true
+		}
+		out[sid] = a.PaneID
+	}
+	for sid := range ambiguous {
+		delete(out, sid)
+	}
+	return out, nil
+}
+
+// AgentForSession returns the herdr target for the live agent holding
+// sessionID — the id of its pane — or ErrNoLiveAgent.
+func AgentForSession(sessionID string) (string, error) {
+	if err := checkArg("session id", sessionID); err != nil {
+		return "", err
+	}
+	out, err := run(agentListArgv()...)
+	if err != nil {
+		return "", err
+	}
+	bySession, err := parseAgentList(out)
+	if err != nil {
+		return "", err
+	}
+	target, ok := bySession[sessionID]
+	if !ok {
+		return "", fmt.Errorf("%s: %w", sessionID, ErrNoLiveAgent)
+	}
+	return target, nil
 }
 
 // AgentPrompt sends text to a running agent as if typed. A successful return

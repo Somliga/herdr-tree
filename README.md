@@ -50,11 +50,13 @@ the picker says which before you commit:
 - **Anywhere else**, it starts a new session that rewinds to that turn and
   carries the summary as its first turn.
 
-The first case needs the live agent's Herdr name, and nothing reports it yet —
-`herdr pane current` names the agent *kind*, and inside the overlay it
-describes the overlay's own pane. Until that is settled, `p` always takes the
-second path; the picker states which one it is about to do, so the difference
-is never silent.
+The first case needs to know where the live session is running. Herdr accepts
+a pane id wherever it accepts an agent, and `herdr agent list` reports each
+live agent's session id, so the session resolves to a pane. If nothing is
+holding the session — it was closed, or opened somewhere Herdr cannot see —
+the second path is taken instead, which is right: there is no conversation to
+continue. The picker states which one it is about to do, so the difference is
+never silent.
 
 A summary of a *different* session arriving here is an **import** — knowledge
 came in from a line that was abandoned. A summary of *this* session's own turns

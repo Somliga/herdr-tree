@@ -85,13 +85,22 @@ func pane() error {
 	if !isGit {
 		fmt.Fprintf(os.Stderr, "herdr-tree: %s is not a git repository; showing only this directory\n", root)
 	}
-	// The live agent's NAME has no verified source yet. `herdr pane current`
-	// reports an agent KIND ("claude"), and called from in here it describes
-	// this overlay pane, which runs no agent at all. So the name is passed
-	// empty until Task 10's manual pass establishes where it comes from: a
-	// fold-back at the live tip then grafts like any other turn, and the
-	// picker says which of the two it is about to do rather than leaving the
-	// difference silent. AgentPrompt is wired regardless, so the send path
-	// starts working the moment a name is available.
-	return tui.Run(a, root, st, sessions, current, "", herdr.AgentPrompt)
+	// Where to send a summary that lands at the live session's tip. herdr
+	// accepts a pane id wherever it accepts an agent, and `agent list`
+	// carries each live agent's session id, so the session resolves to a
+	// target without needing a name — which not every agent has.
+	//
+	// A session nobody is holding, or a herdr that will not answer, leaves
+	// this empty and the fold-back grafts instead. That is the right
+	// fallback: there is no conversation to continue. The overlay says which
+	// of the two it is about to do before the key that commits to it, so the
+	// difference is never silent, and there is nowhere to report an error to
+	// from here — the overlay owns the screen from the next line on.
+	liveAgent := ""
+	if current != "" {
+		if target, err := herdr.AgentForSession(current); err == nil {
+			liveAgent = target
+		}
+	}
+	return tui.Run(a, root, st, sessions, current, liveAgent, herdr.AgentPrompt)
 }
