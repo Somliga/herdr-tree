@@ -5638,3 +5638,81 @@ turn it branched off; and `Select` is unaffected.
 
 `go build ./...`, `go vet ./...`, `go test ./...`, then
 `go build -o bin/herdr-tree.exe ./cmd/herdr-tree`.
+
+---
+
+### Task 18: one key — continue from here
+
+**Why.** The overlay had `⏎ open` (resume the session, always at its latest
+point) and `b branch` (graft at the selected turn). A user selecting an early
+turn and pressing enter got the session's tip and reasonably concluded that
+"resume from a previous point just resumes from the latest". Two keys, one of
+which ignored the selection the whole tree exists to make.
+
+There is only one intent: **continue from the turn I am looking at.** When that
+turn is the session's last, continuing means resuming it — no copy, nothing
+written. When it is earlier, continuing means branching. The distinction is
+mechanical, not something the user should have to hold.
+
+**Files:** `internal/tui/view.go`, `internal/tui/view_test.go`, `README.md`
+
+- [ ] **Step 1: Enter decides**
+
+Replace the top-level `enter` and the `b` case with a single handler:
+
+```go
+		case "enter":
+			n := u.m.Selected()
+			if n == nil || n.Broken {
+				return u, nil
+			}
+			if n.IsSessionLeaf {
+				// Already the tip: continuing means resuming, and nothing is
+				// written. No confirmation, because there is nothing to confirm.
+				u.busy = "opening session…"
+				return u, resumeCmd(u.a, n, u.dstCWD(n))
+			}
+			src := adapter.Session{ID: n.SessionID, CWD: n.SessionCWD, Path: n.SessionPath}
+			turns, entries, size, err := u.a.Preview(src, n.Node.ID)
+			if err != nil {
+				u.status = "cannot continue from here: " + err.Error()
+				return u, nil
+			}
+			u.confirm = confirmText(n, turns, entries, size, u.dstCWD(n))
+```
+
+Delete the `case "b":` block. The confirm dialog's own `enter` still runs
+`branchCmd` unchanged.
+
+- [ ] **Step 2: Say what it will do**
+
+`confirmText` now describes continuing rather than branching:
+
+```go
+func confirmText(n *tree.Node, turns, entries int, size int64, dstCWD string) string {
+	return fmt.Sprintf(
+		"Continue from:  %q\n\nThis starts a NEW session carrying %d turn(s) · %d entries · %s.\nThe original is untouched.\n\nOpens: split right, unfocused in %s\n\n[enter] continue   [esc] cancel",
+		n.Node.Title, turns, entries, humanBytes(size), dstCWD)
+}
+```
+
+- [ ] **Step 3: Footer**
+
+```go
+	b.WriteString(fmt.Sprintf("\n↑↓ move  ←→ fold  ⏎ continue from here  L label  a scope:%s  f filter:%s  esc close\n", scope, u.m.Filter))
+```
+
+and the README key table loses `b`, with `⏎` described as "Continue from the
+selected turn — resumes in place if it is the latest, branches otherwise".
+
+- [ ] **Step 4: Tests**
+
+Design them yourself. Constrain at least: enter on a session leaf produces a
+resume command and NO confirmation; enter on an earlier turn produces a
+confirmation and writes nothing until the second enter; the confirmation names
+the turn being continued from; and a broken session's row does neither.
+
+- [ ] **Step 5: Rebuild and commit**
+
+`go build ./...`, `go vet ./...`, `go test ./...`, then
+`go build -o bin/herdr-tree.exe ./cmd/herdr-tree`.
