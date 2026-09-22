@@ -68,5 +68,6 @@ type Adapter interface {
 	// confirmation dialog. Computed without writing anything.
 	Preview(src Session, atNode string) (turns, entries int, size int64, err error)
 	Branch(src Session, atNode, dstCWD string) (newSessionID string, err error)
+	BranchSeeded(src Session, atNode, dstCWD, seed string) (newSessionID string, err error)
 	Resume(sessionID, cwd string) error
 }

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // ErrNodeNotFound means the requested graft point is not in the transcript.
@@ -161,6 +162,18 @@ func newUUIDv4() (string, error) {
 // atNode, as a fresh session rooted at dstCWD, and returns its id and path.
 // The source transcript is never modified.
 func Graft(srcPath, atNode, dstCWD string) (newSessionID, dstPath string, err error) {
+	return GraftSeeded(srcPath, atNode, dstCWD, "")
+}
+
+// GraftSeeded does what Graft does and, when seed is non-empty, appends one
+// user entry carrying seed verbatim, parented to atNode, and points the new
+// session's leaf at it instead. This is the one primitive behind branching,
+// folding a branch summary back into the trunk, and compaction: all three
+// reduce to "graft at a turn, then append one user entry carrying some
+// text". The caller is responsible for any prefix (SummaryPrefix,
+// CompactionPrefix) — seed lands as the first bytes of the entry's text,
+// nothing prepended.
+func GraftSeeded(srcPath, atNode, dstCWD, seed string) (newSessionID, dstPath string, err error) {
 	es, skipped, err := ParseFile(srcPath)
 	if err != nil {
 		return "", "", err
@@ -232,11 +245,36 @@ func Graft(srcPath, atNode, dstCWD string) (newSessionID, dstPath string, err er
 		buf = append(buf, '\n')
 	}
 
+	leafUUID := atNode
+	if seed != "" {
+		seedUUID, err := newUUIDv4()
+		if err != nil {
+			return "", "", err
+		}
+		b, err := Marshal(Entry{Raw: map[string]any{
+			"type": "user", "uuid": seedUUID, "parentUuid": atNode,
+			"sessionId": newSessionID, "cwd": dstCWD,
+			"version":   verifiedMajorMinor + ".0",
+			"timestamp": time.Now().UTC().Format(time.RFC3339),
+			"userType":  "external", "isSidechain": false,
+			// For us. The text prefix is what anything else reads.
+			"herdrTree": map[string]any{"kind": "summary"},
+			"message": map[string]any{"role": "user",
+				"content": []any{map[string]any{"type": "text", "text": seed}}},
+		}})
+		if err != nil {
+			return "", "", err
+		}
+		buf = append(buf, b...)
+		buf = append(buf, '\n')
+		leafUUID = seedUUID
+	}
+
 	// The leaf pointer Claude Code writes. Proven not sufficient on its own
 	// to truncate history — the pruning above is what does that — but it is
 	// what the format contains, so write it.
 	leaf, err := Marshal(Entry{Raw: map[string]any{
-		"type": "last-prompt", "leafUuid": atNode, "sessionId": newSessionID,
+		"type": "last-prompt", "leafUuid": leafUUID, "sessionId": newSessionID,
 	}})
 	if err != nil {
 		return "", "", err

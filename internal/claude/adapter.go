@@ -66,11 +66,12 @@ func (claudeAdapter) Preview(src adapter.Session, atNode string) (turns, entries
 }
 
 func (claudeAdapter) Branch(src adapter.Session, atNode, dstCWD string) (string, error) {
-	sid, _, err := Graft(sourcePath(src), atNode, dstCWD)
-	if err != nil {
-		return "", err
-	}
-	return sid, nil
+	return claudeAdapter{}.BranchSeeded(src, atNode, dstCWD, "")
+}
+
+func (claudeAdapter) BranchSeeded(src adapter.Session, atNode, dstCWD, seed string) (string, error) {
+	sid, _, err := GraftSeeded(sourcePath(src), atNode, dstCWD, seed)
+	return sid, err
 }
 
 // agentName builds a Herdr agent name for a session in a pane.

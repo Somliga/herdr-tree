@@ -5,7 +5,79 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"herdr-tree/internal/adapter"
 )
+
+func TestGraftSeededAppendsTheSeedAsTheLastTurn(t *testing.T) {
+	projects := t.TempDir()
+	t.Setenv("CLAUDE_PROJECTS_DIR", projects)
+	dst := t.TempDir()
+
+	before, err := os.ReadFile("testdata/simple.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seed := SummaryPrefix + " abc123\n\nThe branch concluded X."
+	sid, path, err := GraftSeeded("testdata/simple.jsonl", "u3", dst, seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, _ := os.ReadFile("testdata/simple.jsonl")
+	if string(before) != string(after) {
+		t.Fatal("seeding modified the source transcript")
+	}
+
+	es, skipped, err := ParseFile(path)
+	if err != nil || skipped > 0 {
+		t.Fatalf("grafted file does not parse: %v skipped=%d", err, skipped)
+	}
+	var last Entry
+	for _, e := range es {
+		if e.UUID() != "" {
+			last = e
+		}
+	}
+	if last.Text() != seed {
+		t.Fatalf("the seed is not the last entry; got %q", last.Text())
+	}
+	if last.ParentUUID() != "u3" {
+		t.Fatalf("seed parented to %q, want u3", last.ParentUUID())
+	}
+	if last.SessionID() != sid {
+		t.Fatalf("seed carries session %q, want %q", last.SessionID(), sid)
+	}
+	k, keep := Classify(last, false)
+	if !keep || k != adapter.KindSummaryImport {
+		t.Fatalf("seed classified as %v keep=%v", k, keep)
+	}
+	fi, _ := os.Stat(path)
+	if fi.Mode().Perm() != 0o600 {
+		t.Fatalf("mode %v want 0600", fi.Mode().Perm())
+	}
+}
+
+func TestGraftWithNoSeedIsUnchanged(t *testing.T) {
+	projects := t.TempDir()
+	t.Setenv("CLAUDE_PROJECTS_DIR", projects)
+	a, _, err := GraftSeeded("testdata/simple.jsonl", "u3", t.TempDir(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a == "" {
+		t.Fatal("want a session id")
+	}
+	// an empty seed must produce exactly what Graft produces
+	t.Setenv("CLAUDE_PROJECTS_DIR", t.TempDir())
+	_, pb, err := Graft("testdata/simple.jsonl", "u3", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	esA, _, _ := ParseFile(pb)
+	if len(esA) == 0 {
+		t.Fatal("control graft produced nothing")
+	}
+}
 
 func TestGraftWritesResumableSession(t *testing.T) {
 	projects := t.TempDir()
