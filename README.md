@@ -60,6 +60,13 @@ the second path is taken instead, which is right: there is no conversation to
 continue. The picker states which one it is about to do, so the difference is
 never silent.
 
+An injected summary is marked two ways: the `⤶` prefix in its text, and a
+`herdrTree` field on the transcript entry. A summary **sent to a live agent**
+can only carry the prefix — a message has no entry of its own to hang a field
+on, it becomes whatever Claude Code records for a turn you typed. That is why
+the prefix is the guarantee and the field is the convenience: the prefix
+survives every route in, the field only survives a graft.
+
 A summary of a *different* session arriving here is an **import** — knowledge
 came in from a line that was abandoned. A summary of *this* session's own turns
 is a **compaction** — the line contracted and nothing new arrived. Both are the

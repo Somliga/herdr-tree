@@ -582,6 +582,9 @@ func (u uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			u.m.Unfold()
 		case "s":
 			if u.m.RangeEnd == nil {
+				if u.m.Selected() == nil {
+					return u, nil // nothing to range over; say nothing
+				}
 				// The END first: "summarise what I just did" is how the
 				// thought arrives, and the cursor is already there.
 				u.m.BeginRange()

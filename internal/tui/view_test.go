@@ -877,3 +877,48 @@ func TestThePickerOnlyPromisesToSendAtTheTip(t *testing.T) {
 		t.Fatalf("the live tip did not send: %d", sent)
 	}
 }
+
+// Escaping the cost dialog is how you go back and move the range's start.
+// Losing the range there would mean re-selecting it to find out what the
+// cheaper version costs.
+func TestEscapingTheCostDialogKeepsTheRange(t *testing.T) {
+	roots := session("s", "t1", "t2", "t3")
+	fa := &fakeAdapter{summary: "x"}
+	u := uiModel{m: New(roots), a: fa, st: loadedStore(t)}
+	u.m.Cursor = 2
+	u.m.BeginRange()
+	u.m.Cursor = 0
+
+	after, _ := u.Update(key('s'))
+	got := after.(uiModel)
+	if got.confirm == "" {
+		t.Fatal("setup: want the cost dialog")
+	}
+
+	after2, cmd := got.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	got2 := after2.(uiModel)
+	if cmd != nil || got2.quitting {
+		t.Fatal("esc on the dialog dismisses it, nothing else")
+	}
+	if got2.confirm != "" {
+		t.Fatal("the dialog should close")
+	}
+	if got2.m.RangeEnd != got2.m.Rows()[2].Node {
+		t.Fatalf("the range was discarded: %+v", got2.m.RangeEnd)
+	}
+	if fa.summarisedTo != "" {
+		t.Fatal("nothing may have been summarised")
+	}
+}
+
+func TestSOnAnEmptyTreeClaimsNothing(t *testing.T) {
+	u := uiModel{m: New(nil), a: &fakeAdapter{}, st: loadedStore(t)}
+	after, cmd := u.Update(key('s'))
+	got := after.(uiModel)
+	if cmd != nil || got.m.RangeEnd != nil {
+		t.Fatal("there is no row to fix a range end on")
+	}
+	if got.status != "" {
+		t.Fatalf("the status claims a range was started: %q", got.status)
+	}
+}
