@@ -538,3 +538,80 @@ func TestNoTrunkFallsBackToV1(t *testing.T) {
 		t.Fatalf("with no trunk the v1 shape stands; graft at %d want 1", depths["graft"])
 	}
 }
+
+func TestAbandonedTailRendersAsABranchAfterARewind(t *testing.T) {
+	// s1 ── s2 ── s3   with the user rewound at s2 into session "new"
+	s1 := &tree.Node{Node: adapter.Node{ID: "s1"}, SessionID: "old", IsSessionRoot: true, IsHead: true}
+	s2 := &tree.Node{Node: adapter.Node{ID: "s2"}, SessionID: "old", IsHead: true}
+	s3 := &tree.Node{Node: adapter.Node{ID: "s3"}, SessionID: "old", IsHead: true}
+	n1 := &tree.Node{Node: adapter.Node{ID: "n1"}, SessionID: "new", IsSessionRoot: true, IsHead: true, Grafted: true}
+	s1.Children = append(s1.Children, s2)
+	s2.Children = append(s2.Children, s3, n1) // Build appends the graft last
+	m := New([]*tree.Node{s1})
+	m.SetTrunk(map[string]bool{"new": true, "old": true})
+
+	at := map[string]Row{}
+	order := []string{}
+	for _, r := range m.Rows() {
+		at[r.Node.Node.ID] = r
+		order = append(order, r.Node.Node.ID)
+	}
+	if at["s3"].Depth != 1 {
+		t.Fatalf("the abandoned tail is a branch; s3 at depth %d want 1", at["s3"].Depth)
+	}
+	if at["s3"].OnTrunk {
+		t.Fatal("the abandoned tail is not on the trunk")
+	}
+	if at["n1"].Depth != 0 || !at["n1"].OnTrunk {
+		t.Fatalf("the rewound session is the main line; n1 at %d onTrunk=%v", at["n1"].Depth, at["n1"].OnTrunk)
+	}
+	if at["s1"].Depth != 0 || at["s2"].Depth != 0 {
+		t.Fatalf("the trunk prefix stays at depth 0: %v", order)
+	}
+}
+
+func TestABranchRendersAtItsDivergenceNotAtTheBottom(t *testing.T) {
+	// t1 ── t2 ── t3 on the trunk, with a branch off t2
+	t1 := &tree.Node{Node: adapter.Node{ID: "t1"}, SessionID: "main", IsSessionRoot: true, IsHead: true}
+	t2 := &tree.Node{Node: adapter.Node{ID: "t2"}, SessionID: "main", IsHead: true}
+	t3 := &tree.Node{Node: adapter.Node{ID: "t3"}, SessionID: "main", IsHead: true}
+	b1 := &tree.Node{Node: adapter.Node{ID: "b1"}, SessionID: "side", IsSessionRoot: true, IsHead: true, Grafted: true}
+	t1.Children = append(t1.Children, t2)
+	t2.Children = append(t2.Children, t3, b1) // Build appends the graft last
+	m := New([]*tree.Node{t1})
+	m.SetTrunk(map[string]bool{"main": true})
+
+	order := []string{}
+	for _, r := range m.Rows() {
+		order = append(order, r.Node.Node.ID)
+	}
+	want := []string{"t1", "t2", "b1", "t3"}
+	if len(order) != len(want) {
+		t.Fatalf("got %v want %v", order, want)
+	}
+	for i := range want {
+		if order[i] != want[i] {
+			t.Fatalf("a branch renders under the turn it left: got %v want %v", order, want)
+		}
+	}
+}
+
+// TestOnTrunkGraftFromANonHeadBodyTurnDoesNotIndent closes a gap found in
+// review: every other fixture in this file sets IsHead, so New() auto-folds
+// it and every walk in this file goes through the FOLDED branch of Rows.
+// A body turn (IsHead: false) is never auto-folded, so its child is the only
+// way to reach the UNFOLDED branch's trunk-continuation exception.
+func TestOnTrunkGraftFromANonHeadBodyTurnDoesNotIndent(t *testing.T) {
+	body := &tree.Node{Node: adapter.Node{ID: "b1"}, SessionID: "main"}
+	cont := &tree.Node{Node: adapter.Node{ID: "c1"}, SessionID: "new", IsSessionRoot: true, IsHead: true, Grafted: true}
+	body.Children = append(body.Children, cont)
+
+	m := New([]*tree.Node{body})
+	m.SetTrunk(map[string]bool{"main": true, "new": true})
+
+	for _, r := range m.Rows() {
+		if r.Node.SessionID == "new" && r.Depth != 0 {
+			t.Fatalf("a graft that continues the trunk must not indent, even off a body turn; got depth %d", r.Depth)
+		}
+	}
+}
