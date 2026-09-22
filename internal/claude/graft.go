@@ -251,17 +251,25 @@ func GraftSeeded(srcPath, atNode, dstCWD, seed string) (newSessionID, dstPath st
 		if err != nil {
 			return "", "", err
 		}
-		b, err := Marshal(Entry{Raw: map[string]any{
+		// For us; the text prefix is what anything else reads, so the field
+		// is DERIVED from it rather than passed in. Hardcoding "summary"
+		// here would stamp a compaction entry as an import.
+		raw := map[string]any{
 			"type": "user", "uuid": seedUUID, "parentUuid": atNode,
 			"sessionId": newSessionID, "cwd": dstCWD,
 			"version":   verifiedMajorMinor + ".0",
 			"timestamp": time.Now().UTC().Format(time.RFC3339),
 			"userType":  "external", "isSidechain": false,
-			// For us. The text prefix is what anything else reads.
-			"herdrTree": map[string]any{"kind": "summary"},
 			"message": map[string]any{"role": "user",
 				"content": []any{map[string]any{"type": "text", "text": seed}}},
-		}})
+		}
+		switch {
+		case strings.HasPrefix(seed, SummaryPrefix):
+			raw["herdrTree"] = map[string]any{"kind": "summary"}
+		case strings.HasPrefix(seed, CompactionPrefix):
+			raw["herdrTree"] = map[string]any{"kind": "compaction"}
+		}
+		b, err := Marshal(Entry{Raw: raw})
 		if err != nil {
 			return "", "", err
 		}

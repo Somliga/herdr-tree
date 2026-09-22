@@ -249,3 +249,45 @@ func TestGraftRefusesUnknownFormatVersion(t *testing.T) {
 		t.Fatalf("got %v want ErrUnsupportedVersion", err)
 	}
 }
+
+// The seed's own prefix is the single source of truth for what the entry is.
+// A hardcoded kind would stamp a compaction entry as an import — false data in
+// a file we write into the user's ~/.claude, where nothing would contradict it.
+func TestSeedKindIsDerivedFromThePrefix(t *testing.T) {
+	for _, c := range []struct {
+		seed string
+		want any
+	}{
+		{SummaryPrefix + " abc\n\nx", "summary"},
+		{CompactionPrefix + " t3..t9\n\nx", "compaction"},
+		{"something with no prefix at all", nil},
+	} {
+		projects := t.TempDir()
+		t.Setenv("CLAUDE_PROJECTS_DIR", projects)
+		_, path, err := GraftSeeded("testdata/simple.jsonl", "u3", t.TempDir(), c.seed)
+		if err != nil {
+			t.Fatal(err)
+		}
+		es, _, err := ParseFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var last Entry
+		for _, e := range es {
+			if e.UUID() != "" {
+				last = e
+			}
+		}
+		got, present := last.Raw["herdrTree"]
+		if c.want == nil {
+			if present {
+				t.Fatalf("an unprefixed seed must carry no herdrTree, got %v", got)
+			}
+			continue
+		}
+		m, ok := got.(map[string]any)
+		if !ok || m["kind"] != c.want {
+			t.Fatalf("seed %q got herdrTree %v, want kind %v", c.seed[:12], got, c.want)
+		}
+	}
+}
