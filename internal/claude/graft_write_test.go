@@ -72,24 +72,31 @@ func TestGraftSeededAppendsTheSeedAsTheLastTurn(t *testing.T) {
 }
 
 func TestGraftWithNoSeedIsUnchanged(t *testing.T) {
-	projects := t.TempDir()
-	t.Setenv("CLAUDE_PROJECTS_DIR", projects)
-	a, _, err := GraftSeeded("testdata/simple.jsonl", "u3", t.TempDir(), "")
-	if err != nil {
-		t.Fatal(err)
+	// Graft delegates to GraftSeeded with an empty seed, so an empty seed must
+	// produce exactly what Graft always produced — byte for byte, once the
+	// session id (random by design, and embedded throughout) is normalised.
+	// The comment used to claim this while the body only checked both grafts
+	// were non-empty.
+	graft := func(seeded bool) string {
+		t.Setenv("CLAUDE_PROJECTS_DIR", t.TempDir())
+		var sid, path string
+		var err error
+		if seeded {
+			sid, path, err = GraftSeeded("testdata/simple.jsonl", "u3", "/tmp/x", "")
+		} else {
+			sid, path, err = Graft("testdata/simple.jsonl", "u3", "/tmp/x")
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return strings.ReplaceAll(string(b), sid, "SID")
 	}
-	if a == "" {
-		t.Fatal("want a session id")
-	}
-	// an empty seed must produce exactly what Graft produces
-	t.Setenv("CLAUDE_PROJECTS_DIR", t.TempDir())
-	_, pb, err := Graft("testdata/simple.jsonl", "u3", t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	esA, _, _ := ParseFile(pb)
-	if len(esA) == 0 {
-		t.Fatal("control graft produced nothing")
+	if a, b := graft(true), graft(false); a != b {
+		t.Fatalf("an empty seed changed the output:\n seeded: %s\n  graft: %s", a, b)
 	}
 }
 
