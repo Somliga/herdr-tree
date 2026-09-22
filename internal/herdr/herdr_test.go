@@ -2,9 +2,27 @@ package herdr
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
+
+// stubHerdr puts a fake `herdr` first on PATH and clears HERDR_BIN_PATH so
+// Bin()'s own fallback resolves to it. It exercises the real subprocess path
+// through run() — exit code, stderr — without ever touching the real herdr
+// binary or a live session, even if a mutation makes run() fall through to
+// exec.
+func stubHerdr(t *testing.T, script string) {
+	t.Helper()
+	dir := t.TempDir()
+	body := "#!/bin/sh\n" + script + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "herdr"), []byte(body), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("HERDR_BIN_PATH", "")
+}
 
 const paneCurrentJSON = `{"id":"cli:pane:current","result":{"pane":{
 "agent":"claude",
@@ -137,6 +155,44 @@ func TestAgentPromptRefusesFlagShapedAgentName(t *testing.T) {
 func TestAgentPromptRefusesEmptyText(t *testing.T) {
 	if err := AgentPrompt("tree-a", "   "); err == nil {
 		t.Fatal("sending an empty message to an agent is never intended")
+	}
+}
+
+func TestAgentPromptSurfacesBlockedFromStderr(t *testing.T) {
+	// Empirically verified against the real binary: herdr writes its error
+	// as JSON on STDERR with a non-zero exit, and stdout is empty. That
+	// means AgentPrompt must recover the error body from stderr, not stdout
+	// — classifyAgentError(out) alone can never see it.
+	stubHerdr(t, `echo '{"error":{"code":"agent_blocked","message":"agent is at an approval dialog"}}' 1>&2
+exit 1`)
+	if err := AgentPrompt("tree-a", "hello"); !errors.Is(err, ErrAgentBlocked) {
+		t.Fatalf("got %v want ErrAgentBlocked", err)
+	}
+}
+
+func TestRunErrorOmitsArgvContent(t *testing.T) {
+	stubHerdr(t, `echo "boom" 1>&2
+exit 1`)
+	const secret = "text nobody should see in a log"
+	_, err := run("agent", "prompt", "tree-a", secret, "--wait", "--timeout", "120000")
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Fatalf("run's error leaked argv content: %v", err)
+	}
+}
+
+func TestAgentPromptErrorOmitsMessageContent(t *testing.T) {
+	stubHerdr(t, `echo '{"error":{"code":"agent_not_found","message":"agent target x not found"}}' 1>&2
+exit 1`)
+	const secret = "the secret summary text nobody should see in a log"
+	err := AgentPrompt("tree-a", secret)
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Fatalf("error leaked message content: %v", err)
 	}
 }
 

@@ -70,6 +70,29 @@ func agentPromptArgv(agent, text string) []string {
 	return []string{"agent", "prompt", agent, text, "--wait", "--timeout", "120000"}
 }
 
+// cmdWords identifies a herdr invocation by its subcommand only (e.g. "agent
+// prompt"), never the full argv: some callers (AgentPrompt) pass message
+// content as an argument, and that must never end up in an error string.
+func cmdWords(args []string) string {
+	n := len(args)
+	if n > 2 {
+		n = 2
+	}
+	return strings.Join(args[:n], " ")
+}
+
+// runError carries herdr's raw stderr bytes without embedding the argv that
+// produced them, so a caller (AgentPrompt) can recover the JSON body to
+// classify while every Error() string stays free of message content.
+type runError struct {
+	cmd    string
+	stderr []byte
+}
+
+func (e *runError) Error() string {
+	return fmt.Sprintf("herdr %s: %s", e.cmd, e.stderr)
+}
+
 func run(args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
@@ -77,14 +100,12 @@ func run(args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, Bin(), args...)
 	out, err := cmd.Output()
 	if ctx.Err() == context.DeadlineExceeded {
-		return nil, fmt.Errorf("herdr %v timed out after %s", args, timeout)
+		return nil, fmt.Errorf("herdr %s timed out after %s", cmdWords(args), timeout)
 	}
 	if err != nil {
 		var ee *exec.ExitError
 		if errors.As(err, &ee) {
-			// herdr's own diagnostic, about panes and processes — not
-			// conversation content.
-			return nil, fmt.Errorf("herdr %v: %s", args, ee.Stderr)
+			return nil, &runError{cmd: cmdWords(args), stderr: ee.Stderr}
 		}
 		return nil, err
 	}
@@ -219,6 +240,16 @@ func AgentPrompt(agent, text string) error {
 	}
 	out, err := run(agentPromptArgv(agent, text)...)
 	if err != nil {
+		// herdr reports its errors (including agent_blocked) as JSON on
+		// stderr with a non-zero exit, which cmd.Output() turns into an
+		// error before we ever see stdout. Recover that stderr body so a
+		// blocked agent is still classifiable.
+		var re *runError
+		if errors.As(err, &re) {
+			if ce := classifyAgentError(re.stderr); ce != nil {
+				return ce
+			}
+		}
 		return err
 	}
 	return classifyAgentError(out)
