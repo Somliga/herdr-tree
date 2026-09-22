@@ -27,7 +27,7 @@ command = "herdr-tree.open"
 | ⏎ | Open the selected session in a new pane |
 | b | Branch from the selected turn |
 | L | Label the selected turn (empty clears) |
-| d | Cycle density: all → labelled → sessions |
+| a | Toggle scope: this session ↔ all sessions |
 | esc | Close |
 
 ## How branching works

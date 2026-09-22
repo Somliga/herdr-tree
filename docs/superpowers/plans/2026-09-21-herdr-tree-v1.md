@@ -3961,82 +3961,12 @@ type Row struct {
 	Folded      bool
 }
 
-// Density is how much of the tree is shown. Cycling it is the answer to a
-// repo with hundreds of sessions: folding hides a subtree you chose, density
-// hides a KIND of row everywhere at once. Borrowed from Pi, whose tree view
-// cycles the same way and which is where this plugin's model came from.
-type Density int
-
-const (
-	DensityAll      Density = iota // every turn
-	DensityLabelled                // only labelled turns, plus session roots
-	DensityRoots                   // one row per session
-)
-
-func (d Density) String() string {
-	switch d {
-	case DensityLabelled:
-		return "labelled"
-	case DensityRoots:
-		return "sessions"
-	default:
-		return "all"
-	}
-}
-
 type Model struct {
-	Roots   []*tree.Node
-	Cursor  int
-	Folded  map[*tree.Node]bool
-	Density Density
+	Roots  []*tree.Node
+	Cursor int
+	Folded map[*tree.Node]bool
 
 	parent map[*tree.Node]*tree.Node
-}
-
-// CycleDensity advances to the next density, keeping the selected node visible
-// where it still can be. A view control that loses your place is worse than no
-// view control.
-func (m *Model) CycleDensity() {
-	was := m.Selected()
-	m.Density = (m.Density + 1) % 3
-	if was == nil {
-		return
-	}
-	for i, r := range m.Rows() {
-		if r.Node == was {
-			m.Cursor = i
-			return
-		}
-	}
-	// the selected row is hidden at this density: fall back to its nearest
-	// visible ancestor rather than jumping to an unrelated row.
-	for n := m.parent[was]; n != nil; n = m.parent[n] {
-		for i, r := range m.Rows() {
-			if r.Node == n {
-				m.Cursor = i
-				return
-			}
-		}
-	}
-	m.Cursor = 0
-	m.clamp()
-}
-
-// visible reports whether a node is shown at the current density. A session
-// root is always shown — hiding one would lose the session entirely, which is
-// the failure this whole design exists to avoid.
-func (m *Model) visible(n *tree.Node) bool {
-	if n.IsSessionRoot {
-		return true
-	}
-	switch m.Density {
-	case DensityRoots:
-		return false
-	case DensityLabelled:
-		return n.Label != ""
-	default:
-		return true
-	}
 }
 
 // New indexes each node's parent so Fold can jump upward.
@@ -4047,6 +3977,46 @@ func (m *Model) visible(n *tree.Node) bool {
 // recover can catch. That kills the plugin process outright rather than
 // merely freezing the view. Graft edges live in a plain JSON file that can be
 // hand-edited or corrupted into a cycle, so this is reachable.
+// ScopeTo narrows the forest to one session's own tree: its turns, plus any
+// session grafted from it, nested.
+//
+// This is the default because it is the actual workflow — go back to an
+// earlier point in THIS conversation and branch from it. A repo-wide forest
+// is the rarer case (looking back at an old branch), and on a real repo it is
+// dozens of sessions of somebody else's turns between you and the one you
+// wanted. Pi's tree is one session for the same reason.
+//
+// Returns nil when the session is not in the forest, so the caller can fall
+// back to showing everything rather than showing nothing.
+func ScopeTo(roots []*tree.Node, sessionID string) []*tree.Node {
+	if sessionID == "" {
+		return nil
+	}
+	var found *tree.Node
+	var walk func(n *tree.Node)
+	seen := map[*tree.Node]bool{}
+	walk = func(n *tree.Node) {
+		if found != nil || seen[n] {
+			return
+		}
+		seen[n] = true
+		if n.IsSessionRoot && n.SessionID == sessionID {
+			found = n
+			return
+		}
+		for _, c := range n.Children {
+			walk(c)
+		}
+	}
+	for _, r := range roots {
+		walk(r)
+	}
+	if found == nil {
+		return nil
+	}
+	return []*tree.Node{found}
+}
+
 func New(roots []*tree.Node) *Model {
 	m := &Model{Roots: roots, Folded: map[*tree.Node]bool{}, parent: map[*tree.Node]*tree.Node{}}
 	var walk func(n *tree.Node)
@@ -4082,16 +4052,13 @@ func (m *Model) Rows() []Row {
 		}
 		visited[n] = true
 		folded := m.Folded[n]
-		shown := m.visible(n)
-		if shown {
-			out = append(out, Row{
-				Node: n, Depth: depth,
-				HasChildren: len(n.Children) > 0,
-				Folded:      folded,
-			})
-			if folded {
-				return
-			}
+		out = append(out, Row{
+			Node: n, Depth: depth,
+			HasChildren: len(n.Children) > 0,
+			Folded:      folded,
+		})
+		if folded {
+			return
 		}
 		// Indent only where the tree actually branches — at a graft edge.
 		//
@@ -4107,7 +4074,7 @@ func (m *Model) Rows() []Row {
 		// hide its children.
 		for _, c := range n.Children {
 			next := depth
-			if shown && c.SessionID != n.SessionID {
+			if c.SessionID != n.SessionID {
 				next = depth + 1
 			}
 			walk(c, next)
@@ -4493,6 +4460,31 @@ type uiModel struct {
 
 	labelling *tree.Node // non-nil while typing a label
 	labelText string
+
+	roots    []*tree.Node // the whole forest
+	scopeAll bool         // false: just the current session's tree
+}
+
+// rebuild reapplies the scope, keeping the selected node where it still
+// exists so toggling scope does not lose your place.
+func (u *uiModel) rebuild() {
+	was := u.m.Selected()
+	roots := u.roots
+	if !u.scopeAll {
+		if scoped := ScopeTo(u.roots, u.current); scoped != nil {
+			roots = scoped
+		}
+	}
+	u.m = New(roots)
+	if was == nil {
+		return
+	}
+	for i, r := range u.m.Rows() {
+		if r.Node == was {
+			u.m.Cursor = i
+			return
+		}
+	}
 }
 
 // actionDoneMsg carries the result of an adapter call back onto the update
@@ -4638,8 +4630,9 @@ func (u uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			u.busy = "opening session…"
 			return u, resumeCmd(u.a, n, u.dstCWD(n))
-		case "d":
-			u.m.CycleDensity()
+		case "a":
+			u.scopeAll = !u.scopeAll
+			u.rebuild()
 		case "L":
 			n := u.m.Selected()
 			if n == nil || n.Node.ID == "" {
@@ -4685,7 +4678,11 @@ func (u uiModel) View() string {
 		}
 		b.WriteString(marker + renderRow(r, i == u.m.Cursor, u.current, u.width-2) + "\n")
 	}
-	b.WriteString(fmt.Sprintf("\n↑↓ move  ←→ fold  ⏎ open  b branch  L label  d density:%s  esc close\n", u.m.Density))
+	scope := "this session"
+	if u.scopeAll {
+		scope = "all sessions"
+	}
+	b.WriteString(fmt.Sprintf("\n↑↓ move  ←→ fold  ⏎ open  b branch  L label  a scope:%s  esc close\n", scope))
 	if u.busy != "" {
 		b.WriteString(u.busy + "\n")
 	}
@@ -4698,7 +4695,8 @@ func (u uiModel) View() string {
 // Run starts the overlay.
 func Run(a adapter.Adapter, repoRoot string, st *store.Store, sessions []adapter.Session, current string) error {
 	roots := tree.Build(sessions, st)
-	u := uiModel{m: New(roots), a: a, st: st, repoRoot: repoRoot, current: current}
+	u := uiModel{m: New(roots), a: a, st: st, repoRoot: repoRoot, current: current, roots: roots}
+	u.rebuild() // start scoped to the current session
 	_, err := tea.NewProgram(u, tea.WithAltScreen()).Run()
 	return err
 }
