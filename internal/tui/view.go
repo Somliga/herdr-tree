@@ -87,7 +87,7 @@ func renderRow(r Row, selected bool, currentSession string, width int) string {
 // exactly what a graft copies and where it will open.
 func confirmText(n *tree.Node, turns, entries int, size int64, dstCWD string) string {
 	return fmt.Sprintf(
-		"Branch from:  %q\nCarries:      %d turns · %d entries · %s\nOpens:        split right, unfocused in %s\n\n[enter] branch   [esc] cancel",
+		"Continue from:  %q\n\nThis starts a NEW session carrying %d turn(s) · %d entries · %s.\nThe original is untouched.\n\nOpens: split right, unfocused in %s\n\n[enter] continue   [esc] cancel",
 		n.Node.Title, turns, entries, humanBytes(size), dstCWD)
 }
 
@@ -272,11 +272,22 @@ func (u uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			u.m.Unfold()
 		case "enter":
 			n := u.m.Selected()
-			if n == nil {
+			if n == nil || n.Broken {
 				return u, nil
 			}
-			u.busy = "opening session…"
-			return u, resumeCmd(u.a, n, u.dstCWD(n))
+			if n.IsSessionLeaf {
+				// Already the tip: continuing means resuming, and nothing is
+				// written. No confirmation, because there is nothing to confirm.
+				u.busy = "opening session…"
+				return u, resumeCmd(u.a, n, u.dstCWD(n))
+			}
+			src := adapter.Session{ID: n.SessionID, CWD: n.SessionCWD, Path: n.SessionPath}
+			turns, entries, size, err := u.a.Preview(src, n.Node.ID)
+			if err != nil {
+				u.status = "cannot continue from here: " + err.Error()
+				return u, nil
+			}
+			u.confirm = confirmText(n, turns, entries, size, u.dstCWD(n))
 		case "a":
 			u.scopeAll = !u.scopeAll
 			u.rebuild()
@@ -289,16 +300,6 @@ func (u uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			u.labelling = n
 			u.labelText = n.Label
-		case "b":
-			if n := u.m.Selected(); n != nil && !n.Broken {
-				src := adapter.Session{ID: n.SessionID, CWD: n.SessionCWD, Path: n.SessionPath}
-				turns, entries, size, err := u.a.Preview(src, n.Node.ID)
-				if err != nil {
-					u.status = "cannot branch here: " + err.Error()
-				} else {
-					u.confirm = confirmText(n, turns, entries, size, u.dstCWD(n))
-				}
-			}
 		}
 	}
 	return u, nil
@@ -340,7 +341,7 @@ func (u uiModel) View() string {
 	if u.scopeAll {
 		scope = "all sessions"
 	}
-	b.WriteString(fmt.Sprintf("↑↓ move  ←→ fold  ⏎ open  b branch  L label  a scope:%s  f filter:%s  esc close\n", scope, u.m.Filter))
+	b.WriteString(fmt.Sprintf("↑↓ move  ←→ fold  ⏎ continue from here  L label  a scope:%s  f filter:%s  esc close\n", scope, u.m.Filter))
 	if u.busy != "" {
 		b.WriteString(u.busy + "\n")
 	}

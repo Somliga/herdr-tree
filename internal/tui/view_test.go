@@ -209,9 +209,87 @@ func TestScopeToggleKeepsCursorOnTheSameNode(t *testing.T) {
 func TestConfirmTextNamesWhatIsCarried(t *testing.T) {
 	n := &tree.Node{Node: adapter.Node{ID: "u3", Title: "what do you think"}}
 	got := confirmText(n, 3, 12, 41984, "/home/somliga/projects/surtr")
-	for _, want := range []string{"what do you think", "3 turns", "12 entries", "41 KB", "/home/somliga/projects/surtr"} {
+	for _, want := range []string{"what do you think", "3 turn(s)", "12 entries", "41 KB", "/home/somliga/projects/surtr"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("confirm text missing %q:\n%s", want, got)
 		}
+	}
+}
+
+// Enter is the single "continue from here" key: on the session's tip it
+// resumes with nothing written, and on any earlier turn it asks first
+// because that path writes a graft.
+
+func TestEnterOnSessionLeafResumesWithoutConfirming(t *testing.T) {
+	n := &tree.Node{Node: adapter.Node{ID: "n1", Title: "x"}, SessionID: "sid-a", IsSessionLeaf: true}
+	u := uiModel{m: New([]*tree.Node{n}), a: fakeAdapter{}}
+
+	after, cmd := u.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	got := after.(uiModel)
+	if got.confirm != "" {
+		t.Fatalf("resuming the tip must not confirm: %q", got.confirm)
+	}
+	if cmd == nil {
+		t.Fatal("want a resume command")
+	}
+	msg, ok := cmd().(actionDoneMsg)
+	if !ok {
+		t.Fatalf("want actionDoneMsg from resumeCmd, got %T", cmd())
+	}
+	if !msg.quit {
+		t.Fatal("want the resume to succeed and close the overlay")
+	}
+}
+
+func TestEnterOnEarlierTurnConfirmsAndWritesNothingUntilConfirmed(t *testing.T) {
+	n := &tree.Node{Node: adapter.Node{ID: "n1", Title: "an earlier turn"}, SessionID: "sid-a"}
+	u := uiModel{m: New([]*tree.Node{n}), a: fakeAdapter{}}
+
+	after, cmd := u.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	got := after.(uiModel)
+	if cmd != nil {
+		t.Fatal("continuing from an earlier turn must not act before confirmation")
+	}
+	if got.confirm == "" {
+		t.Fatal("want a confirmation before branching from an earlier turn")
+	}
+	if !strings.Contains(got.confirm, "an earlier turn") {
+		t.Fatalf("confirmation does not name the turn: %q", got.confirm)
+	}
+
+	// Only the confirm dialog's own enter performs the branch.
+	after2, cmd2 := got.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd2 == nil {
+		t.Fatal("want branchCmd once confirmed")
+	}
+	if after2.(uiModel).confirm != "" {
+		t.Fatal("confirmation should close once acted on")
+	}
+}
+
+func TestEnterOnBrokenRowDoesNothing(t *testing.T) {
+	n := &tree.Node{Node: adapter.Node{ID: "n1", Title: "x"}, SessionID: "sid-a", Broken: true}
+	u := uiModel{m: New([]*tree.Node{n}), a: fakeAdapter{}}
+
+	after, cmd := u.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	got := after.(uiModel)
+	if cmd != nil {
+		t.Fatal("a broken row must not resume")
+	}
+	if got.confirm != "" {
+		t.Fatal("a broken row must not confirm a branch")
+	}
+}
+
+func TestBKeyNoLongerBranches(t *testing.T) {
+	n := &tree.Node{Node: adapter.Node{ID: "n1", Title: "x"}, SessionID: "sid-a"}
+	u := uiModel{m: New([]*tree.Node{n}), a: fakeAdapter{}}
+
+	after, cmd := u.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'b'}})
+	if cmd != nil {
+		t.Fatal("b must no longer trigger any action")
+	}
+	if after.(uiModel).confirm != "" {
+		t.Fatal("b must no longer open the confirmation")
 	}
 }

@@ -24,8 +24,7 @@ command = "herdr-tree.open"
 |-----|--------|
 | ↑ ↓ | Move |
 | ← → | Fold / unfold |
-| ⏎ | Open the selected session in a new pane |
-| b | Branch from the selected turn |
+| ⏎ | Continue from the selected turn — resumes in place if it is the latest, branches otherwise |
 | L | Label the selected turn (empty clears) |
 | a | Toggle scope: this session ↔ all sessions |
 | esc | Close |
