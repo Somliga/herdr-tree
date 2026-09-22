@@ -220,9 +220,9 @@ func TestMaxDepthTracksGraftNestingNotTurnCount(t *testing.T) {
 	// number, so a long session alone produced a deep tree. It must instead
 	// track how many graft edges are nested, which here is 2 regardless of
 	// how many turns each session has.
-	root := chain("n1", "n2", "n3", "n4", "n5") // 5 turns, no grafts: depth must stay 0
+	root := chain("n1", "n2", "n3", "n4", "n5")                                                                       // 5 turns, no grafts: depth must stay 0
 	mid := graftChain("s2", root.Children[0].Children[0].Children[0].Children[0], "m1", "m2", "m3", "m4", "m5", "m6") // grafted, +6 turns
-	graftChain("s3", mid.Children[0].Children[0], "o1", "o2") // grafted again, one level deeper
+	graftChain("s3", mid.Children[0].Children[0], "o1", "o2")                                                         // grafted again, one level deeper
 
 	m := New([]*tree.Node{root})
 	max := 0
@@ -483,7 +483,6 @@ func TestGraftedChildIndentsOneLevelInAScopedView(t *testing.T) {
 	}
 }
 
-
 func TestTrunkRendersAtDepthZeroEvenWhenGrafted(t *testing.T) {
 	// root ── (branch point) ── grafted, and the user is in the grafted one
 	root := &tree.Node{Node: adapter.Node{ID: "r1"}, SessionID: "root", IsSessionRoot: true, IsHead: true}
@@ -612,6 +611,96 @@ func TestOnTrunkGraftFromANonHeadBodyTurnDoesNotIndent(t *testing.T) {
 	for _, r := range m.Rows() {
 		if r.Node.SessionID == "new" && r.Depth != 0 {
 			t.Fatalf("a graft that continues the trunk must not indent, even off a body turn; got depth %d", r.Depth)
+		}
+	}
+}
+
+func TestRangeSelectionSpansBothDirections(t *testing.T) {
+	m := New([]*tree.Node{chain("n1", "n2", "n3", "n4", "n5")})
+	m.Cursor = 3 // n4
+	m.BeginRange()
+	if m.RangeEnd == nil || m.RangeEnd.Node.ID != "n4" {
+		t.Fatal("BeginRange fixes the end at the cursor")
+	}
+	m.Cursor = 1 // n2
+	from, to, ok := m.RangeSpan()
+	if !ok || from.Node.ID != "n2" || to.Node.ID != "n4" {
+		t.Fatalf("span %v..%v ok=%v; want n2..n4", from, to, ok)
+	}
+	rows := m.Rows()
+	for i, r := range rows {
+		want := i >= 1 && i <= 3
+		if r.InRange != want {
+			t.Fatalf("row %d (%s) InRange=%v want %v", i, r.Node.Node.ID, r.InRange, want)
+		}
+	}
+	m.CancelRange()
+	if _, _, ok := m.RangeSpan(); ok {
+		t.Fatal("cancel clears the range")
+	}
+}
+
+func TestRangeOfOneTurnIsValid(t *testing.T) {
+	m := New([]*tree.Node{chain("n1", "n2")})
+	m.Cursor = 1
+	m.BeginRange()
+	from, to, ok := m.RangeSpan()
+	if !ok || from != to {
+		t.Fatal("a single turn is a legitimate range")
+	}
+}
+
+// TestRangeSurvivesAFilterThatKeepsBothEnds is the "shaped like real data"
+// case: refiltering rebuilds the Rows() slice (different indices, same
+// underlying *tree.Node pointers) without discarding RangeEnd. The range
+// must still resolve correctly against the new row order.
+func TestRangeSurvivesAFilterThatKeepsBothEnds(t *testing.T) {
+	n1 := &tree.Node{Node: adapter.Node{ID: "n1", Kind: adapter.KindHuman, Title: "t1"}, SessionID: "s1", IsSessionRoot: true, IsHead: true}
+	n2 := &tree.Node{Node: adapter.Node{ID: "n2", Kind: adapter.KindToolCall, Title: "t2"}, SessionID: "s1"}
+	n3 := &tree.Node{Node: adapter.Node{ID: "n3", Kind: adapter.KindHuman, Title: "t3"}, SessionID: "s1", IsHead: true}
+	n1.Children = append(n1.Children, n2)
+	n2.Children = append(n2.Children, n3)
+
+	m := New([]*tree.Node{n1})
+	m.Cursor = 0
+	m.Unfold()   // open n1's section so its body (n2) and n3 are visible
+	m.Cursor = 2 // n3, the last human turn
+	m.BeginRange()
+	m.Cursor = 0 // n1
+
+	m.Filter = FilterHuman // drops n2, the tool call in between
+	from, to, ok := m.RangeSpan()
+	if !ok || from.Node.ID != "n1" || to.Node.ID != "n3" {
+		t.Fatalf("span %v..%v ok=%v; want n1..n3 to survive the filter", from, to, ok)
+	}
+	rows := m.Rows()
+	for _, r := range rows {
+		if !r.InRange {
+			t.Fatalf("row %s dropped out of range after refiltering: %+v", r.Node.Node.ID, rows)
+		}
+	}
+}
+
+// TestRangeGoesInactiveWhenItsEndIsRebuilt shows the failure mode of a
+// rebuild: tree.Build makes fresh *tree.Node pointers every time, so a
+// RangeEnd captured before a rebuild can never match a row in the new tree
+// by pointer identity. The range should simply stop applying rather than
+// panic or mark the wrong row.
+func TestRangeGoesInactiveWhenItsEndIsRebuilt(t *testing.T) {
+	m := New([]*tree.Node{chain("n1", "n2", "n3")})
+	m.Cursor = 2
+	m.BeginRange()
+
+	rebuilt := New([]*tree.Node{chain("n1", "n2", "n3")}) // fresh pointers, same shape
+	rebuilt.RangeEnd = m.RangeEnd                         // stale pointer from the old tree
+	rebuilt.Cursor = 0
+
+	if _, _, ok := rebuilt.RangeSpan(); ok {
+		t.Fatal("a range whose end no longer exists in this tree must not resolve")
+	}
+	for _, r := range rebuilt.Rows() {
+		if r.InRange {
+			t.Fatalf("no row should be marked in-range against a stale end: %+v", r)
 		}
 	}
 }

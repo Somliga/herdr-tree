@@ -91,6 +91,37 @@ func TestCurrentTipIsStyledAndMarked(t *testing.T) {
 	}
 }
 
+// Spec §6b: colour reinforces, it never carries alone. A range that is only
+// a colour is a defect — the ┃ gutter is the range's non-colour carrier.
+func TestRangeRowIsStyledAndMarked(t *testing.T) {
+	n := &tree.Node{Node: adapter.Node{ID: "n1", Kind: adapter.KindAssistant, Title: "reply"}, SessionID: "s"}
+	text, key := renderRow(Row{Node: n, InRange: true}, false, "", 80)
+	if key != StyleRange {
+		t.Fatalf("in-range row styled %v, want StyleRange", key)
+	}
+	if !strings.Contains(text, "┃") {
+		t.Fatalf("in-range row lacks its glyph: %q", text)
+	}
+
+	// A broken session outranks range colouring — data integrity over an
+	// in-progress selection — but must still keep the range's own glyph, so
+	// the row does not silently drop out of the range visually.
+	broken := &tree.Node{SessionID: "s", IsSessionRoot: true, Broken: true}
+	text, key = renderRow(Row{Node: broken, InRange: true}, false, "", 80)
+	if key != StyleBroken {
+		t.Fatalf("a broken row in range styled %v, want StyleBroken", key)
+	}
+	if !strings.Contains(text, "┃") {
+		t.Fatalf("broken-but-in-range row lost its range glyph: %q", text)
+	}
+
+	// A row outside the range gets neither.
+	out, key := renderRow(Row{Node: n}, false, "", 80)
+	if key == StyleRange || strings.Contains(out, "┃") {
+		t.Fatalf("a row outside the range must not carry the range marker: %q key=%v", out, key)
+	}
+}
+
 // The ⤶ comes from the entry's own text, so the renderer must not add a
 // second one. Synthetic titles in other tests never collide with the real
 // prefix, which is how "⤶ ⤶ summary of …" reached a real screen.

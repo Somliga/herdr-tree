@@ -17,6 +17,7 @@ const (
 	StyleCompaction
 	StyleBroken
 	StyleCurrent
+	StyleRange
 )
 
 // The palette lives here alone so it can be made configurable without
@@ -35,6 +36,7 @@ var palette = map[StyleKey]lipgloss.Style{
 	StyleCompaction: lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "26", Dark: "75"}),
 	StyleBroken:     lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "160", Dark: "203"}),
 	StyleCurrent:    lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "28", Dark: "114"}),
+	StyleRange:      lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "90", Dark: "183"}).Bold(true),
 }
 
 // styleFor picks the row's style key from what produced it, not from where it

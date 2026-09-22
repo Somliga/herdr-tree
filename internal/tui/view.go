@@ -37,6 +37,9 @@ func renderRow(r Row, selected bool, currentSession string, width int) (string, 
 	var b strings.Builder
 	b.WriteString(strings.Repeat("  ", r.Depth))
 
+	if r.InRange {
+		b.WriteString("┃ ")
+	}
 	if r.Node.Broken {
 		b.WriteString("⚠ ")
 	}
@@ -86,7 +89,14 @@ func renderRow(r Row, selected bool, currentSession string, width int) (string, 
 	if width > 0 && len([]rune(line)) > width {
 		line = string([]rune(line)[:width-1]) + "…"
 	}
-	return line, styleFor(r.Node, currentTip)
+	key := styleFor(r.Node, currentTip)
+	// A range in progress is the thing the user is actively manipulating, so
+	// it outranks the row's ordinary kind colour and even the current-tip
+	// marker — but not Broken, which is data integrity and always wins.
+	if r.InRange && key != StyleBroken {
+		key = StyleRange
+	}
+	return line, key
 }
 
 // confirmText is the branch confirmation, which is where the user is told

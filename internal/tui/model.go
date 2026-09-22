@@ -18,6 +18,9 @@ type Row struct {
 	// OnTrunk is whether this row's session is on the current lineage. See
 	// Model.SetTrunk.
 	OnTrunk bool
+	// InRange is whether this row falls within the current summarisation
+	// range. See Model.BeginRange.
+	InRange bool
 }
 
 // bodyCount counts a node's descendants that are its own section body: same
@@ -61,8 +64,76 @@ type Model struct {
 	Folded  map[*tree.Node]bool
 	Filter  Filter
 	OnTrunk map[string]bool
+	// RangeEnd is the fixed end of a summarisation range, set by BeginRange.
+	// nil means no range is in progress.
+	RangeEnd *tree.Node
 
 	parent map[*tree.Node]*tree.Node
+}
+
+// BeginRange fixes the END of a summarisation range at the cursor. The end
+// first, because "summarise what I just did" is how the thought arrives and
+// the cursor is already there — the reverse of most range pickers, and
+// deliberately so (spec's flagged-as-worth-trying reversal).
+func (m *Model) BeginRange() {
+	m.RangeEnd = m.Selected()
+}
+
+// CancelRange clears an in-progress range without acting on it.
+func (m *Model) CancelRange() { m.RangeEnd = nil }
+
+// RangeSpan returns the range in document order regardless of which end the
+// cursor is on, or ok=false when no range is active or either end has
+// scrolled out of the current rows (e.g. the tree was rebuilt or refiltered
+// out from under it).
+func (m *Model) RangeSpan() (from, to *tree.Node, ok bool) {
+	if m.RangeEnd == nil {
+		return nil, nil, false
+	}
+	cur := m.Selected()
+	if cur == nil {
+		return nil, nil, false
+	}
+	rows := m.Rows()
+	ci, ei := -1, -1
+	for i, r := range rows {
+		if r.Node == cur {
+			ci = i
+		}
+		if r.Node == m.RangeEnd {
+			ei = i
+		}
+	}
+	if ci < 0 || ei < 0 {
+		return nil, nil, false
+	}
+	if ci <= ei {
+		return cur, m.RangeEnd, true
+	}
+	return m.RangeEnd, cur, true
+}
+
+// rangeIndices is RangeSpan's index-only sibling, used by Rows itself: it
+// looks up the same span against the rows slice Rows already built, rather
+// than calling Rows again and recursing.
+func (m *Model) rangeIndices(rows []Row) (from, to int, ok bool) {
+	if m.RangeEnd == nil || m.Cursor < 0 || m.Cursor >= len(rows) {
+		return 0, 0, false
+	}
+	ei := -1
+	for i, r := range rows {
+		if r.Node == m.RangeEnd {
+			ei = i
+			break
+		}
+	}
+	if ei < 0 {
+		return 0, 0, false
+	}
+	if m.Cursor <= ei {
+		return m.Cursor, ei, true
+	}
+	return ei, m.Cursor, true
 }
 
 // SetTrunk records which sessions are on the current lineage. An empty or nil
@@ -338,6 +409,11 @@ func (m *Model) Rows() []Row {
 	}
 	for _, r := range m.Roots {
 		walk(r, 0, m.onTrunk(r))
+	}
+	if from, to, ok := m.rangeIndices(out); ok {
+		for i := from; i <= to; i++ {
+			out[i].InRange = true
+		}
 	}
 	return out
 }
