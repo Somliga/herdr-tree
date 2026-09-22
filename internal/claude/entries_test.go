@@ -202,6 +202,26 @@ func TestClassifyRecognisesInjectedSummaries(t *testing.T) {
 	}
 }
 
+// A modern transcript stamps origin.kind, and an injected summary is not
+// something a human typed — its origin is "peer" or absent. The prefix check
+// must therefore win over the origin split, or the summary is dropped from the
+// tree on exactly the transcripts that are now the common case.
+func TestInjectedSummaryOutranksTheOriginSplit(t *testing.T) {
+	for _, origin := range []string{`,"origin":{"kind":"peer","from":"x"}`, ``} {
+		line := `{"type":"user","uuid":"u","parentUuid":null,"sessionId":"S"` + origin +
+			`,"message":{"role":"user","content":[{"type":"text","text":` +
+			mustJSON(SummaryPrefix+" f2af34a4\n\nTried redis, rejected.") + `}]}}`
+		e, err := parseLine([]byte(line))
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, keep := Classify(e, true) // hasOrigin: the transcript records origin
+		if !keep || got != adapter.KindSummaryImport {
+			t.Fatalf("origin %q: got (%v, %v), want (import, true) — the prefix must outrank origin", origin, got, keep)
+		}
+	}
+}
+
 func TestInjectedSummaryIsKeptByTheGraft(t *testing.T) {
 	// The tree renders it distinctly; the graft must still carry it verbatim.
 	line := `{"type":"user","uuid":"s1","parentUuid":null,"sessionId":"S","message":{"role":"user","content":[{"type":"text","text":` +
