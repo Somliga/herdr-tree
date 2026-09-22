@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"herdr-tree/internal/adapter"
+	"herdr-tree/internal/store"
 	"herdr-tree/internal/tree"
 )
 
@@ -343,6 +344,124 @@ func TestCycleFilterTogglesAndBack(t *testing.T) {
 	m.CycleFilter()
 	if m.Filter != FilterDefault {
 		t.Fatalf("filter %v want FilterDefault", m.Filter)
+	}
+}
+
+// realisticSession builds a session with `heads` human prompts whose bodies
+// (assistant replies and tool calls) sum to `bodyTotal`, distributed as
+// evenly as the division allows — the scale at which the depth-equals-turn
+// and flat-wall-of-rows bugs actually show up, not a 3-turn mockup.
+func realisticSession(id string, heads, bodyTotal int) adapter.Session {
+	s := adapter.Session{ID: id, Title: "t-" + id}
+	remaining := bodyTotal
+	for h := 0; h < heads; h++ {
+		s.Nodes = append(s.Nodes, adapter.Node{ID: fmt.Sprintf("h%d", h), Title: "prompt", Kind: adapter.KindHuman})
+		left := heads - h
+		n := remaining / left
+		for b := 0; b < n; b++ {
+			kind := adapter.KindAssistant
+			if b%2 == 1 {
+				kind = adapter.KindToolCall
+			}
+			s.Nodes = append(s.Nodes, adapter.Node{ID: fmt.Sprintf("h%d-b%d", h, b), Title: "reply", Kind: kind})
+		}
+		remaining -= n
+	}
+	return s
+}
+
+func TestRealisticSessionFoldsToJustItsPromptsAndUnfoldsToEverything(t *testing.T) {
+	sess := realisticSession("s1", 19, 660)
+	roots := tree.Build([]adapter.Session{sess}, &store.Store{Branches: map[string]store.Branch{}})
+	m := New(roots)
+
+	folded := m.Rows()
+	if len(folded) != 19 {
+		t.Fatalf("folded rows = %d want 19", len(folded))
+	}
+	for _, r := range folded {
+		if r.Depth != 0 {
+			t.Fatalf("folded row %q at depth %d want 0: every head must sit level regardless of session length", r.Node.Node.ID, r.Depth)
+		}
+		if !r.Node.IsHead {
+			t.Fatalf("row %q visible while folded but is not a head", r.Node.Node.ID)
+		}
+	}
+
+	for n := range m.Folded {
+		delete(m.Folded, n)
+	}
+	unfolded := m.Rows()
+	if len(unfolded) != 679 {
+		t.Fatalf("unfolded rows = %d want 679 (19 heads + 660 body)", len(unfolded))
+	}
+	max := 0
+	for _, r := range unfolded {
+		if r.Depth > max {
+			max = r.Depth
+		}
+		if !r.Node.IsHead && r.Depth != 1 {
+			t.Fatalf("body row %q at depth %d want 1", r.Node.Node.ID, r.Depth)
+		}
+		if r.Node.IsHead && r.Depth != 0 {
+			t.Fatalf("head row %q at depth %d want 0", r.Node.Node.ID, r.Depth)
+		}
+	}
+	if max != 1 {
+		t.Fatalf("max depth unfolded = %d want 1", max)
+	}
+}
+
+func TestFoldedHeadReportsItsBodySize(t *testing.T) {
+	sess := realisticSession("s1", 19, 660)
+	roots := tree.Build([]adapter.Session{sess}, &store.Store{Branches: map[string]store.Branch{}})
+	m := New(roots)
+	rows := m.Rows()
+	total := 0
+	for _, r := range rows {
+		if !r.Folded || !r.HasChildren {
+			t.Fatalf("row %q should be a folded head with children", r.Node.Node.ID)
+		}
+		total += r.BodyCount
+	}
+	if total != 660 {
+		t.Fatalf("sum of BodyCount across all folded heads = %d want 660", total)
+	}
+}
+
+func TestGraftFromABodyTurnIndentsOneLevelFurtherThanTheBody(t *testing.T) {
+	st := &store.Store{Branches: map[string]store.Branch{}}
+	st.Add("s2", store.Branch{GraftedFrom: store.From{SessionID: "s1", Node: "h0-b0"}})
+	sess1 := realisticSession("s1", 2, 4) // small: h0,h0-b0,h0-b1,h1,h1-b0
+	sess2 := adapter.Session{ID: "s2", Title: "t-s2", Nodes: []adapter.Node{{ID: "m1", Title: "branch", Kind: adapter.KindHuman}}}
+
+	roots := tree.Build([]adapter.Session{sess1, sess2}, st)
+	m := New(roots)
+	for n := range m.Folded {
+		delete(m.Folded, n)
+	}
+	byID := map[string]Row{}
+	for _, r := range m.Rows() {
+		byID[r.Node.Node.ID] = r
+	}
+	if byID["h0-b0"].Depth != 1 {
+		t.Fatalf("h0-b0 (body) depth %d want 1", byID["h0-b0"].Depth)
+	}
+	if byID["m1"].Depth != 2 {
+		t.Fatalf("grafted session should sit one level deeper than the body turn it branched from: got %d want 2", byID["m1"].Depth)
+	}
+}
+
+func TestSelectStillCarriesEveryEntryDespiteFolding(t *testing.T) {
+	// Select (internal/claude/graft.go) is untouched by this change: the
+	// asymmetry between what the tree hides and what a graft carries is
+	// load-bearing. This just confirms the tree's own node count into a
+	// graft point is unaffected by section folding — Select walks
+	// sess.Nodes directly, never the *tree.Node forest, so folding cannot
+	// reach it.
+	sess := realisticSession("s1", 19, 660)
+	if len(sess.Nodes) != 679 {
+		t.Fatalf("session has %d raw nodes want 679: folding must never touch the underlying transcript", len(sess.Nodes))
 	}
 }
 

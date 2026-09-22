@@ -1,6 +1,7 @@
 package tree
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -183,6 +184,50 @@ func TestEmptySessionStillRenders(t *testing.T) {
 	}
 	if !roots[0].IsSessionRoot || roots[0].SessionID != "s1" {
 		t.Fatalf("got %+v", roots[0])
+	}
+}
+
+// sessWithKinds builds a session where each node's Kind is given explicitly,
+// for testing section grouping (sess() above always builds KindHuman nodes,
+// which makes every turn a head and so never exercises this).
+func sessWithKinds(id string, kinds ...adapter.Kind) adapter.Session {
+	s := adapter.Session{ID: id, Title: "t-" + id, Updated: time.Now()}
+	for i, k := range kinds {
+		s.Nodes = append(s.Nodes, adapter.Node{ID: fmt.Sprintf("n%d", i+1), Title: fmt.Sprintf("turn %d", i+1), Kind: k})
+	}
+	return s
+}
+
+func TestPromptHeadsASectionWithRepliesAndToolCallsAsItsBody(t *testing.T) {
+	// n1 human, n2 assistant, n3 tool, n4 human, n5 assistant.
+	roots := Build([]adapter.Session{sessWithKinds("s1",
+		adapter.KindHuman, adapter.KindAssistant, adapter.KindToolCall, adapter.KindHuman, adapter.KindAssistant,
+	)}, emptyStore())
+	n1 := roots[0]
+	if !n1.IsHead {
+		t.Fatal("a human prompt must be a section head")
+	}
+	if len(n1.Children) != 3 {
+		t.Fatalf("n1 children %d want 3 (n2, n3, then the next head n4)", len(n1.Children))
+	}
+	n2, n3, n4 := n1.Children[0], n1.Children[1], n1.Children[2]
+	if n2.IsHead || n3.IsHead {
+		t.Fatalf("assistant/tool-call turns must not be heads: n2.IsHead=%v n3.IsHead=%v", n2.IsHead, n3.IsHead)
+	}
+	if !n4.IsHead {
+		t.Fatal("n4 (human) must be a section head")
+	}
+	if len(n4.Children) != 1 || n4.Children[0].Node.ID != "n5" || n4.Children[0].IsHead {
+		t.Fatalf("n5 should be n4's body, not a head: %+v", n4.Children)
+	}
+}
+
+func TestFirstTurnIsAHeadEvenWhenNotHuman(t *testing.T) {
+	// A session that does not start with a human turn still needs a head to
+	// hang its body off.
+	roots := Build([]adapter.Session{sessWithKinds("s1", adapter.KindAssistant, adapter.KindToolCall)}, emptyStore())
+	if !roots[0].IsHead {
+		t.Fatal("the first turn of a session must be a head even if it is not human")
 	}
 }
 

@@ -25,7 +25,11 @@ type Node struct {
 	Grafted       bool // this node starts a session branched from its parent
 	Broken        bool // session present but unreadable or empty
 	Label         string
-	Children      []*Node
+	// IsHead marks a section head: a human prompt, or the first entry of a
+	// session that does not start with one. Everything until the next head is
+	// that section's body.
+	IsHead   bool
+	Children []*Node
 }
 
 // Build turns sessions plus graft edges into roots. A session is a chain;
@@ -47,20 +51,36 @@ func Build(sessions []adapter.Session, s *store.Store) []*Node {
 		var head, prev *Node
 		for i, t := range sess.Nodes {
 			n := &Node{
-				Node: t, SessionID: sess.ID, SessionCWD: sess.CWD, SessionPath: sess.Path,
-				SessionTitle: sess.Title,
-				IsSessionRoot: i == 0, IsSessionLeaf: i == len(sess.Nodes)-1, Broken: sess.Broken,
+				Node: t, SessionID: sess.ID, SessionCWD: sess.CWD,
+				SessionPath: sess.Path, SessionTitle: sess.Title,
+				IsSessionRoot: i == 0,
+				IsSessionLeaf: i == len(sess.Nodes)-1,
+				Broken:        sess.Broken,
 			}
 			n.Label = s.Labels[store.LabelKey(sess.ID, t.ID)]
 			nodeIndex[sess.ID][t.ID] = n
-			if prev == nil {
+
+			isHead := t.Kind == adapter.KindHuman || head == nil
+			switch {
+			case head == nil && prev == nil:
+				// first node of the session
+			case isHead:
+				// a new section hangs off the previous section head, so
+				// sections form a chain the indent rule keeps level
+				head.Children = append(head.Children, n)
+			default:
+				// body of the current section
+				head.Children = append(head.Children, n)
+			}
+			n.IsHead = isHead
+			if isHead {
 				head = n
-			} else {
-				prev.Children = append(prev.Children, n)
+			}
+			if prev == nil {
+				chains[sess.ID] = n
 			}
 			prev = n
 		}
-		chains[sess.ID] = head
 	}
 
 	// Graft edges come out of a map, whose iteration order Go randomises per

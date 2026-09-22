@@ -50,6 +50,7 @@ func renderRow(r Row, selected bool, currentSession string, width int) string {
 		b.WriteString("▸ ")
 	}
 
+
 	if r.Node.Label != "" {
 		b.WriteString("★ " + r.Node.Label + "  ")
 	}
@@ -71,6 +72,9 @@ func renderRow(r Row, selected bool, currentSession string, width int) string {
 
 	if r.Node.SessionID != "" && r.Node.SessionID == currentSession && r.Node.IsSessionLeaf {
 		b.WriteString("   ● current")
+	}
+	if r.Folded && r.HasChildren {
+		b.WriteString(fmt.Sprintf("  (%d)", r.BodyCount))
 	}
 	line := b.String()
 	if width > 0 && len([]rune(line)) > width {

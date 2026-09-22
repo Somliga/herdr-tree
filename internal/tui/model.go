@@ -12,6 +12,25 @@ type Row struct {
 	Depth       int
 	HasChildren bool
 	Folded      bool
+	// BodyCount is how many of this node's descendants belong to its own
+	// section body — what a folded row is hiding.
+	BodyCount int
+}
+
+// bodyCount counts a node's descendants that are its own section body: same
+// session, not a further section head. A section's body entries have no
+// same-session children of their own, so this only ever recurses one level
+// deep in practice, but it is written to hold if that ever changes.
+func bodyCount(n *tree.Node) int {
+	count := 0
+	for _, c := range n.Children {
+		if c.SessionID != n.SessionID || c.IsHead {
+			continue
+		}
+		count++
+		count += bodyCount(c)
+	}
+	return count
 }
 
 // Filter is which kinds of entry are shown. Pi's lesson: filtering is a TREE
@@ -155,6 +174,18 @@ func New(roots []*tree.Node) *Model {
 	for _, r := range roots {
 		walk(r)
 	}
+	// Sections start folded. The point of opening the tree is to find a turn,
+	// not to read 684 rows of tool calls; the body is one keypress away.
+	for n := range m.parent {
+		if n.IsHead && len(n.Children) > 0 {
+			m.Folded[n] = true
+		}
+	}
+	for _, r := range roots {
+		if r.IsHead && len(r.Children) > 0 {
+			m.Folded[r] = true
+		}
+	}
 	return m
 }
 
@@ -181,12 +212,22 @@ func (m *Model) Rows() []Row {
 				Node: n, Depth: depth,
 				HasChildren: len(n.Children) > 0,
 				Folded:      folded,
+				BodyCount:   bodyCount(n),
 			})
 		}
 		if folded {
+			// Folding a section hides its body, but the chain of section
+			// heads must keep going — otherwise a folded prompt would take
+			// every later prompt in the session down with it.
+			for _, c := range n.Children {
+				if c.IsHead && c.SessionID == n.SessionID {
+					walk(c, depth)
+				}
+			}
 			return
 		}
-		// Indent only where the tree actually branches — at a graft edge.
+		// Indent only where the tree actually branches — at a graft edge or
+		// into a section's body.
 		//
 		// A session's turns are a PATH, not a hierarchy: turn 40 is not
 		// "inside" turn 39. Indenting per chain step made depth equal the turn
@@ -194,14 +235,19 @@ func (m *Model) Rows() []Row {
 		// columns to the right and off the screen entirely. Every mockup in
 		// the spec was a four-turn illustration, which hid it completely.
 		//
-		// A child in the SAME session renders at its parent's depth. A child
-		// starting a DIFFERENT session — which only happens via a graft edge —
-		// is the one thing that earns an indent. A hidden node still does not
-		// hide its children.
+		// A child in the SAME session renders at its parent's depth, unless
+		// it is the body of a section (n is a head, c is not) — Pi has no
+		// such thing because Pi's sessions have topology to show; ours only
+		// has the turn boundary. A child starting a DIFFERENT session — which
+		// only happens via a graft edge — also earns an indent. A hidden node
+		// still does not hide its children.
 		for _, c := range n.Children {
 			next := depth
-			if c.SessionID != n.SessionID {
-				next = depth + 1
+			switch {
+			case c.SessionID != n.SessionID:
+				next = depth + 1 // a graft: a real branch in the tree
+			case n.IsHead && !c.IsHead:
+				next = depth + 1 // this section's body
 			}
 			walk(c, next)
 		}
