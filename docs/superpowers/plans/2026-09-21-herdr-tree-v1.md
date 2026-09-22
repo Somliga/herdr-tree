@@ -5105,3 +5105,388 @@ user's data and a resumable session is worth more than a tidy directory.
 **Store nothing that can be derived.** The store holds graft edges and
 nothing else. If you find yourself caching titles or turn counts into
 tree.json, the tree has started lying about transcripts it no longer reads.
+
+---
+
+### Task 16: Pi-style conversation tree
+
+**Why this replaces the turn list.** The v1 tree showed only user turns. On a real
+session that is a wall of near-identical rows, because Claude Code's `type: "user"`
+is a catch-all: real prompts, tool results, subagent traffic, slash-command
+scaffolding, system reminders and peer-agent messages all share it. Measured on a
+real 2,478-entry session here: 93 of 117 surviving "turns" were agent-to-agent
+messages and 24 were prompts — and 5 of those 24 were skill injections and
+`<bash-input>` echoes.
+
+Pi solves this by never inferring: it has ten entry types, so `user-only` is a
+one-line role test. We cannot copy the predicate. We copy the **pipeline**:
+
+```
+classify → project → re-parent → re-indent → window
+```
+
+**Files:**
+- Create: `internal/claude/entries.go`, `internal/claude/entries_test.go`
+- Modify: `internal/adapter/adapter.go` (Node gains Kind), `internal/claude/discover.go`
+  (call Entries), `internal/tree/tree.go` (carry Kind), `internal/tui/model.go`
+  (Filter + window), `internal/tui/view.go` (role-prefixed rows, viewport, counter)
+- Delete: `internal/claude/turns.go`'s `Turns` (its `Title`/`SessionTitle` stay)
+
+**Interfaces:**
+- Produces: `adapter.Kind` with `KindHuman`, `KindAssistant`, `KindToolCall`;
+  `adapter.Node.Kind`; `claude.Classify(e Entry, hasOrigin bool) (adapter.Kind, bool)`;
+  `claude.Entries(es []Entry) []adapter.Node`; `tui.Filter` with `FilterDefault`,
+  `FilterHuman`; `(*Model).CycleFilter()`; `(*Model).Window(height int) (rows []Row, start, total int)`
+
+- [ ] **Step 1: Neutral kinds**
+
+In `internal/adapter/adapter.go`:
+
+```go
+// Kind is what produced an entry. Universal across agents: a human typed it,
+// the model said it, or the model called a tool.
+type Kind int
+
+const (
+	KindHuman Kind = iota
+	KindAssistant
+	KindToolCall
+)
+
+func (k Kind) String() string {
+	switch k {
+	case KindAssistant:
+		return "assistant"
+	case KindToolCall:
+		return "tool"
+	default:
+		return "user"
+	}
+}
+```
+
+and add `Kind Kind` to `Node`.
+
+- [ ] **Step 2: The classifier**
+
+Create `internal/claude/entries.go`:
+
+```go
+package claude
+
+import (
+	"strings"
+
+	"herdr-tree/internal/adapter"
+)
+
+// injected marks user-entry text that Claude Code wrote on the user's behalf.
+// None of it was typed by a person, and all of it appears as type "user".
+var injected = []string{
+	"Another Claude session sent a message",
+	"<local-command-caveat", "<command-name>", "<command-message>",
+	"<local-command-stdout", "<user-memory-input",
+	"<system-reminder", "[SYSTEM NOTIFICATION", "<task-notification",
+	"<bash-input>", "<bash-stdout>", "<bash-stderr>",
+	"Base directory for this skill:",
+	"Caveat: The messages below were generated",
+	syntheticResume,
+}
+
+// HasHumanOrigin reports whether this transcript records `origin` at all.
+// Newer Claude Code stamps origin.kind on user entries: "human" for something
+// typed, "peer" for a message from another agent session. When present it is
+// authoritative and no guessing is needed. Twelve of the 106 transcripts on
+// the development machine predate it, so the heuristics below remain the
+// fallback rather than the primary rule.
+func HasHumanOrigin(es []Entry) bool {
+	for _, e := range es {
+		if o, ok := e.Raw["origin"].(map[string]any); ok {
+			if o["kind"] == "human" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func originKind(e Entry) string {
+	if o, ok := e.Raw["origin"].(map[string]any); ok {
+		if k, ok := o["kind"].(string); ok {
+			return k
+		}
+	}
+	return ""
+}
+
+// blockType returns the single content block type of an entry. Claude Code
+// writes one entry per content block, so this is unambiguous.
+func blockType(e Entry) string {
+	m, _ := e.Raw["message"].(map[string]any)
+	if m == nil {
+		return ""
+	}
+	blocks, _ := m["content"].([]any)
+	for _, b := range blocks {
+		if blk, ok := b.(map[string]any); ok {
+			if t, ok := blk["type"].(string); ok {
+				return t
+			}
+		}
+	}
+	return ""
+}
+
+// toolLabel renders a tool call the way Pi does: the CALL, not its output.
+// The argument shown is the most identifying one per tool, shortened to the
+// home-relative path where it is a path.
+func toolLabel(e Entry) string {
+	m, _ := e.Raw["message"].(map[string]any)
+	if m == nil {
+		return "[tool]"
+	}
+	blocks, _ := m["content"].([]any)
+	for _, b := range blocks {
+		blk, ok := b.(map[string]any)
+		if !ok || blk["type"] != "tool_use" {
+			continue
+		}
+		name, _ := blk["name"].(string)
+		args, _ := blk["input"].(map[string]any)
+		pick := func(keys ...string) string {
+			for _, k := range keys {
+				if v, ok := args[k].(string); ok && v != "" {
+					return v
+				}
+			}
+			return ""
+		}
+		arg := pick("file_path", "path", "command", "pattern", "query", "prompt", "url")
+		arg = shortenHome(arg)
+		if name == "Bash" && len(arg) > 50 {
+			arg = arg[:50] + "..."
+		}
+		if arg == "" {
+			return "[" + strings.ToLower(name) + "]"
+		}
+		return "[" + strings.ToLower(name) + ": " + arg + "]"
+	}
+	return "[tool]"
+}
+
+// Classify decides what an entry is and whether it belongs in the tree.
+// hasOrigin selects the authoritative path over the heuristic one.
+func Classify(e Entry, hasOrigin bool) (adapter.Kind, bool) {
+	if e.IsSidechain() {
+		return 0, false // subagent traffic is its own conversation
+	}
+	switch e.Type() {
+	case "assistant":
+		switch blockType(e) {
+		case "text":
+			if strings.TrimSpace(e.Text()) == "" {
+				return 0, false // a text-less assistant turn renders as nothing
+			}
+			return adapter.KindAssistant, true
+		case "tool_use":
+			return adapter.KindToolCall, true
+		}
+		return 0, false // thinking and everything else
+	case "user":
+		if e.HasToolUseResult() || e.IsToolResult() {
+			return 0, false // the call is shown, not the output
+		}
+		if hasOrigin {
+			return adapter.KindHuman, originKind(e) == "human"
+		}
+		t := strings.TrimSpace(e.Text())
+		if t == "" {
+			return 0, false
+		}
+		for _, p := range injected {
+			if strings.HasPrefix(t, p) {
+				return 0, false
+			}
+		}
+		return adapter.KindHuman, true
+	}
+	return 0, false
+}
+
+// Entries projects a transcript into tree nodes, in file order.
+func Entries(es []Entry) []adapter.Node {
+	hasOrigin := HasHumanOrigin(es)
+	var out []adapter.Node
+	for _, e := range es {
+		k, keep := Classify(e, hasOrigin)
+		if !keep {
+			continue
+		}
+		title := Title(e.Text(), 200)
+		if k == adapter.KindToolCall {
+			title = toolLabel(e)
+		}
+		out = append(out, adapter.Node{ID: e.UUID(), Title: title, Kind: k, At: e.Timestamp()})
+	}
+	return out
+}
+```
+
+Add to `turns.go`, replacing `Turns` (keep `Title` and `SessionTitle`):
+
+```go
+func shortenHome(p string) string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" || !strings.HasPrefix(p, home) {
+		return p
+	}
+	return "~" + p[len(home):]
+}
+
+// IsPrompt reports whether an entry is something a human typed. Kept for
+// Select's asymmetry: the tree hides injected entries, the graft keeps them.
+func IsPrompt(e Entry) bool {
+	k, keep := Classify(e, HasHumanOrigin([]Entry{e}))
+	return keep && k == adapter.KindHuman
+}
+```
+
+- [ ] **Step 3: Discover projects entries, not turns**
+
+In `discover.go`, replace `Nodes: Turns(es)` with `Nodes: Entries(es)`.
+
+- [ ] **Step 4: Carry Kind through the tree**
+
+In `tree.go`'s per-turn loop the `adapter.Node` is copied wholesale, so `Kind`
+travels already. No change beyond confirming it.
+
+- [ ] **Step 5: Filter and window in the model**
+
+In `internal/tui/model.go`:
+
+```go
+// Filter is which kinds of entry are shown. Pi's lesson: filtering is a TREE
+// operation, not row hiding — a hidden node's children re-parent onto its
+// nearest visible ancestor, so the fork structure between surviving rows stays
+// intact. Rows() already descends through hidden nodes at the parent's depth,
+// which is that re-parenting.
+type Filter int
+
+const (
+	FilterDefault Filter = iota // prompts, replies and tool calls
+	FilterHuman                 // only what a person typed
+)
+
+func (f Filter) String() string {
+	if f == FilterHuman {
+		return "human"
+	}
+	return "all"
+}
+
+func (m *Model) CycleFilter() {
+	was := m.Selected()
+	m.Filter = (m.Filter + 1) % 2
+	if was == nil {
+		return
+	}
+	for i, r := range m.Rows() {
+		if r.Node == was {
+			m.Cursor = i
+			return
+		}
+	}
+	m.clamp()
+}
+
+func (m *Model) shows(n *tree.Node) bool {
+	if n.IsSessionRoot {
+		return true
+	}
+	if m.Filter == FilterHuman {
+		return n.Node.Kind == adapter.KindHuman
+	}
+	return true
+}
+
+// Window returns the slice of rows to draw for a viewport of the given height,
+// the index it starts at, and the total. The selection is pinned near the
+// middle once it has travelled that far, so holding an arrow scrolls the list
+// rather than running the cursor off the edge — Pi computes its start index
+// per render from the selection alone, with no stored scroll offset, and so
+// does this.
+func (m *Model) Window(height int) ([]Row, int, int) {
+	rows := m.Rows()
+	if height < 1 {
+		height = 1
+	}
+	if len(rows) <= height {
+		return rows, 0, len(rows)
+	}
+	half := height / 2
+	start := m.Cursor - half
+	if start < 0 {
+		start = 0
+	}
+	if start > len(rows)-height {
+		start = len(rows) - height
+	}
+	return rows[start : start+height], start, len(rows)
+}
+```
+
+Add `Filter Filter` to `Model`, and gate the append in `Rows` on `m.shows(n)`
+exactly as the old density check did — emit the row only when shown, but always
+descend into children, indenting only across a graft edge.
+
+- [ ] **Step 6: Role-prefixed rows and a real viewport**
+
+In `view.go`, `renderRow` gains a role prefix before the title:
+
+```go
+	switch r.Node.Node.Kind {
+	case adapter.KindAssistant:
+		b.WriteString("assistant: ")
+	case adapter.KindToolCall:
+		// the label already carries its own brackets
+	default:
+		if !r.Node.IsSessionRoot {
+			b.WriteString("user: ")
+		}
+	}
+```
+
+and `View` draws a window instead of everything:
+
+```go
+	height := u.height - 4 // header, blank, footer, status
+	if height < 5 {
+		height = 5
+	}
+	rows, start, total := u.m.Window(height)
+	for i, r := range rows {
+		marker := "  "
+		if start+i == u.m.Cursor {
+			marker = "> "
+		}
+		b.WriteString(marker + renderRow(r, start+i == u.m.Cursor, u.current, u.width-2) + "\n")
+	}
+	b.WriteString(fmt.Sprintf("\n(%d/%d)  ", u.m.Cursor+1, total))
+```
+
+and the footer gains `f filter:<mode>`, with `f` bound to `u.m.CycleFilter()`.
+
+- [ ] **Step 7: Tests**
+
+Write them yourself against `testdata/simple.jsonl` and a new fixture with a
+peer message, a skill injection and an `origin` field. Constrain at minimum:
+a peer message never becomes a node; `origin.kind == "human"` is preferred over
+the heuristics when present; a transcript with no `origin` at all still yields
+its prompts; a tool call renders as `[name: arg]` and never as its output;
+`Window` keeps the selection visible at the top, middle and bottom of a long
+list; and `Select` still keeps everything the tree hides.
+
+- [ ] **Step 8: Rebuild and commit**
+
+`go build ./...`, `go vet ./...`, `go test ./...`, then
+`go build -o bin/herdr-tree.exe ./cmd/herdr-tree`.
