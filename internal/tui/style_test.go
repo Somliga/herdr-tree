@@ -67,8 +67,13 @@ func TestEveryColouredDistinctionAlsoHasAGlyph(t *testing.T) {
 // Nothing consumed StyleCurrent until this test: an earlier draft styled the
 // tip as an ordinary prompt and spent the green on nothing.
 func TestCurrentTipIsStyledAndMarked(t *testing.T) {
+	// Kind matters: with Kind unset the node is KindHuman, and tip-first and
+	// kind-first orderings both return StyleCurrent, so the test could not
+	// fail. A real tip is almost always an assistant reply — the last thing
+	// in a session is what Claude said, not what you typed.
 	tip := &tree.Node{
-		Node: adapter.Node{ID: "n9", Title: "last thing"}, SessionID: "sid-a",
+		Node:          adapter.Node{ID: "n9", Title: "last thing", Kind: adapter.KindAssistant},
+		SessionID:     "sid-a",
 		IsSessionLeaf: true,
 	}
 	text, key := renderRow(Row{Node: tip}, false, "sid-a", 80)

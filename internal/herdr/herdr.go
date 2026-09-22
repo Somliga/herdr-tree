@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
@@ -108,8 +109,24 @@ func agentListArgv() []string {
 	return []string{"agent", "list"}
 }
 
+// agentPromptWait is how long herdr is asked to wait for the agent to settle,
+// and agentPromptSlack is how much longer OUR context runs than that.
+//
+// The two must not be read separately. With a context shorter than the wait we
+// abandon a call herdr is still completing: we report that nothing was sent,
+// herdr goes on to deliver it anyway, the user sends again, and the
+// conversation receives the same summary twice. The argv value below is
+// derived from the same constant so the two cannot drift.
+// Vars, not consts, for the same reason as timeout: a test has to shrink them
+// to drive the paths they guard.
+var (
+	agentPromptWait  = 120 * time.Second
+	agentPromptSlack = 15 * time.Second
+)
+
 func agentPromptArgv(agent, text string) []string {
-	return []string{"agent", "prompt", agent, text, "--wait", "--timeout", "120000"}
+	ms := strconv.FormatInt(agentPromptWait.Milliseconds(), 10)
+	return []string{"agent", "prompt", agent, text, "--wait", "--timeout", ms}
 }
 
 // cmdWords identifies a herdr invocation by its subcommand only (e.g. "agent
@@ -136,13 +153,19 @@ func (e *runError) Error() string {
 }
 
 func run(args ...string) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	return runFor(timeout, args...)
+}
+
+// runFor is run with an explicit budget, for the one call whose own contract
+// is longer than the default.
+func runFor(budget time.Duration, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), budget)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, Bin(), args...)
 	out, err := cmd.Output()
 	if ctx.Err() == context.DeadlineExceeded {
-		return nil, fmt.Errorf("herdr %s timed out after %s", cmdWords(args), timeout)
+		return nil, fmt.Errorf("herdr %s timed out after %s", cmdWords(args), budget)
 	}
 	if err != nil {
 		var ee *exec.ExitError
@@ -359,7 +382,7 @@ func AgentPrompt(agent, text string) error {
 	if strings.HasPrefix(text, "-") {
 		return fmt.Errorf("message begins with a dash: %w", ErrUnsafeArgument)
 	}
-	out, err := run(agentPromptArgv(agent, text)...)
+	out, err := runFor(agentPromptWait+agentPromptSlack, agentPromptArgv(agent, text)...)
 	if err != nil {
 		// herdr reports its errors (including agent_blocked) as JSON on
 		// stderr with a non-zero exit, which cmd.Output() turns into an

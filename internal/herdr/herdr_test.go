@@ -1,6 +1,7 @@
 package herdr
 
 import (
+	"strconv"
 	"time"
 	"errors"
 	"os"
@@ -232,9 +233,9 @@ func TestRunTimeoutOmitsArgvContent(t *testing.T) {
 	// that FORKS sleep keeps the stdout pipe open and Output() blocks for the
 	// full five seconds even though the context fired on time.
 	stubHerdr(t, "exec sleep 5")
-	old := timeout
-	timeout = 20 * time.Millisecond
-	t.Cleanup(func() { timeout = old })
+	old, oldWait, oldSlack := timeout, agentPromptWait, agentPromptSlack
+	timeout, agentPromptWait, agentPromptSlack = 20*time.Millisecond, 20*time.Millisecond, 0
+	t.Cleanup(func() { timeout, agentPromptWait, agentPromptSlack = old, oldWait, oldSlack })
 
 	secret := "⤶ summary of abc\n\nthe user's private conversation text"
 	err := AgentPrompt("tree-abc", secret)
@@ -364,5 +365,53 @@ func TestOpenTreePaneArgvDropsAnImplausibleSession(t *testing.T) {
 		if got := strings.Join(openTreePaneArgv("/repo", bad), " "); strings.Contains(got, "--env") {
 			t.Fatalf("session %q was passed through: %q", bad, got)
 		}
+	}
+}
+
+// Our own context must outlast the wait we ask herdr for. If it does not, we
+// abandon a call herdr is still completing, report that nothing was sent, and
+// herdr delivers it anyway — the user sends again and the conversation gets
+// the same summary twice. The argv value and the budget come from one
+// constant so they cannot drift apart.
+func TestAgentPromptOutlastsTheWaitItAsksFor(t *testing.T) {
+	argv := agentPromptArgv("tree-abc", "hello")
+	var asked string
+	for i, a := range argv {
+		if a == "--timeout" && i+1 < len(argv) {
+			asked = argv[i+1]
+		}
+	}
+	if asked == "" {
+		t.Fatalf("no --timeout in %q", argv)
+	}
+	ms, err := strconv.ParseInt(asked, 10, 64)
+	if err != nil {
+		t.Fatalf("--timeout %q is not a number: %v", asked, err)
+	}
+	wait := time.Duration(ms) * time.Millisecond
+	if budget := agentPromptWait + agentPromptSlack; budget <= wait {
+		t.Fatalf("our budget %s does not outlast the %s we ask herdr to wait", budget, wait)
+	}
+	if wait != agentPromptWait {
+		t.Fatalf("argv asks for %s but the constant says %s", wait, agentPromptWait)
+	}
+	// The default budget is deliberately shorter; this call must not use it.
+	if timeout >= agentPromptWait {
+		t.Fatalf("the default %s is no longer shorter than the prompt wait, so this test proves nothing", timeout)
+	}
+}
+
+// The relationship between the constants is not enough: AgentPrompt must
+// actually use the longer budget. Putting it back on the default `run` left
+// the constants' own test green.
+func TestAgentPromptUsesItsOwnBudgetNotTheDefault(t *testing.T) {
+	stubHerdr(t, "exec sleep 0.2; echo '{}'")
+	old, oldWait, oldSlack := timeout, agentPromptWait, agentPromptSlack
+	// Far too short for the stub; the prompt budget is comfortably long enough.
+	timeout, agentPromptWait, agentPromptSlack = 20*time.Millisecond, 2*time.Second, time.Second
+	t.Cleanup(func() { timeout, agentPromptWait, agentPromptSlack = old, oldWait, oldSlack })
+
+	if err := AgentPrompt("tree-abc", "⤶ summary of abc\n\nbody"); err != nil {
+		t.Fatalf("agent prompt fell back to the default budget: %v", err)
 	}
 }
