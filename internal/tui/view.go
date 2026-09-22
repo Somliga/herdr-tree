@@ -72,7 +72,8 @@ func renderRow(r Row, selected bool, currentSession string, width int) (string, 
 	}
 	b.WriteString(title)
 
-	if r.Node.SessionID != "" && r.Node.SessionID == currentSession && r.Node.IsSessionLeaf {
+	currentTip := r.Node.SessionID != "" && r.Node.SessionID == currentSession && r.Node.IsSessionLeaf
+	if currentTip {
 		b.WriteString("   ● current")
 	}
 	if r.Folded && r.HasChildren {
@@ -82,7 +83,7 @@ func renderRow(r Row, selected bool, currentSession string, width int) (string, 
 	if width > 0 && len([]rune(line)) > width {
 		line = string([]rune(line)[:width-1]) + "…"
 	}
-	return line, styleFor(r.Node, r.OnTrunk)
+	return line, styleFor(r.Node, currentTip)
 }
 
 // confirmText is the branch confirmation, which is where the user is told

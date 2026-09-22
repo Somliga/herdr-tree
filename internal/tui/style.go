@@ -17,7 +17,6 @@ const (
 	StyleCompaction
 	StyleBroken
 	StyleCurrent
-	StyleTrunk
 )
 
 // The palette lives here alone so it can be made configurable without
@@ -36,15 +35,23 @@ var palette = map[StyleKey]lipgloss.Style{
 	StyleCompaction: lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "26", Dark: "75"}),
 	StyleBroken:     lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "160", Dark: "203"}),
 	StyleCurrent:    lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "28", Dark: "114"}),
-	StyleTrunk:      lipgloss.NewStyle(),
 }
 
 // styleFor picks the row's style key from what produced it, not from where it
 // sits. A broken session always wins: an unreadable transcript matters more
-// than what kind of entry it claims to be.
-func styleFor(n *tree.Node, onTrunk bool) StyleKey {
+// than what kind of entry it claims to be. The tip you are sitting on wins
+// next — "you are here" outranks "this was a prompt".
+//
+// There is deliberately no trunk style. Spec §6b's table has no trunk row, and
+// the trunk is already carried by depth: an earlier draft of this file gave
+// the trunk an EMPTY style, which de-emphasised the main line relative to the
+// branches it outranks.
+func styleFor(n *tree.Node, currentTip bool) StyleKey {
 	if n.Broken {
 		return StyleBroken
+	}
+	if currentTip {
+		return StyleCurrent
 	}
 	switch n.Node.Kind {
 	case adapter.KindAssistant:
@@ -55,9 +62,6 @@ func styleFor(n *tree.Node, onTrunk bool) StyleKey {
 		return StyleImport
 	case adapter.KindSummaryCompaction:
 		return StyleCompaction
-	}
-	if onTrunk {
-		return StyleTrunk
 	}
 	return StyleHuman
 }

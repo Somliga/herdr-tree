@@ -57,3 +57,31 @@ func TestEveryColouredDistinctionAlsoHasAGlyph(t *testing.T) {
 		}
 	}
 }
+
+// Spec §6b gives the current session's tip its own colour and its own ● glyph.
+// Nothing consumed StyleCurrent until this test: an earlier draft styled the
+// tip as an ordinary prompt and spent the green on nothing.
+func TestCurrentTipIsStyledAndMarked(t *testing.T) {
+	tip := &tree.Node{
+		Node: adapter.Node{ID: "n9", Title: "last thing"}, SessionID: "sid-a",
+		IsSessionLeaf: true,
+	}
+	text, key := renderRow(Row{Node: tip}, false, "sid-a", 80)
+	if key != StyleCurrent {
+		t.Fatalf("the tip of the session you are in is styled %v, want StyleCurrent", key)
+	}
+	if !strings.Contains(text, "● current") {
+		t.Fatalf("colour never carries alone; the tip needs its glyph too: %q", text)
+	}
+
+	// Another session's leaf is not your tip.
+	_, key = renderRow(Row{Node: tip}, false, "sid-b", 80)
+	if key == StyleCurrent {
+		t.Fatal("a leaf in another session must not be styled as the current tip")
+	}
+	// A broken tip is broken first: an unreadable transcript outranks it.
+	broken := &tree.Node{Node: adapter.Node{ID: "n9"}, SessionID: "sid-a", IsSessionLeaf: true, Broken: true}
+	if _, key := renderRow(Row{Node: broken}, false, "sid-a", 80); key != StyleBroken {
+		t.Fatalf("a broken tip styled %v, want StyleBroken", key)
+	}
+}
