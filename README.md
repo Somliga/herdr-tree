@@ -25,9 +25,42 @@ command = "herdr-tree.open"
 | ↑ ↓ | Move |
 | ← → | Fold / unfold |
 | ⏎ | Continue from the selected turn — resumes in place if it is the latest, branches otherwise |
+| s | Summarise: fixes the END of a range, then move to its start and press `s` or ⏎ |
+| p | Fold a summary back in at the selected turn |
 | L | Label the selected turn (empty clears) |
 | a | Toggle scope: this session ↔ all sessions |
-| esc | Close |
+| f | Cycle filter: all entries ↔ only what a person typed |
+| esc | Cancel the range being selected, or close the overlay |
+
+While a range is being selected the footer says so, and `esc` cancels the
+range rather than closing.
+
+## Summarising and folding back
+
+`s` summarises a range of turns, on demand and never automatically. It costs a
+real model call: the summary is produced by reading the session up to the end
+of the range, so the confirmation reports what that costs before anything is
+spent. The summary is stored in the tree; the session is not touched.
+
+`p` appends a stored summary at the selected turn. Two things can happen, and
+the picker says which before you commit:
+
+- **At the tip of the session you are in**, the summary is simply your next
+  message and Herdr delivers it to the running agent. Nothing is copied.
+- **Anywhere else**, it starts a new session that rewinds to that turn and
+  carries the summary as its first turn.
+
+The first case needs the live agent's Herdr name, and nothing reports it yet —
+`herdr pane current` names the agent *kind*, and inside the overlay it
+describes the overlay's own pane. Until that is settled, `p` always takes the
+second path; the picker states which one it is about to do, so the difference
+is never silent.
+
+A summary of a *different* session arriving here is an **import** — knowledge
+came in from a line that was abandoned. A summary of *this* session's own turns
+is a **compaction** — the line contracted and nothing new arrived. Both are the
+same operation; the injected turn's `⤶` prefix is what tells them apart, in the
+tree and to any tool that reads the transcript later.
 
 ## How branching works
 

@@ -147,6 +147,20 @@ func (s *Store) AddSummary(sum Summary) {
 	s.Summaries[SummaryKey(sum.SessionID, sum.FromTurn, sum.ToTurn)] = sum
 }
 
+// sortSummaries orders summaries oldest first, with a tie-break on the key:
+// the source is a map, whose iteration order Go randomises, and CreatedAt
+// ties are ordinary (a caller may leave it zero). Without the tie-break the
+// fold-back picker reshuffles between opens, which makes a list feel broken.
+func sortSummaries(out []Summary) {
+	sort.SliceStable(out, func(i, j int) bool {
+		if !out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].CreatedAt.Before(out[j].CreatedAt)
+		}
+		return SummaryKey(out[i].SessionID, out[i].FromTurn, out[i].ToTurn) <
+			SummaryKey(out[j].SessionID, out[j].FromTurn, out[j].ToTurn)
+	})
+}
+
 // SummariesFor returns every summary recorded against a session, oldest first.
 func (s *Store) SummariesFor(sessionID string) []Summary {
 	var out []Summary
@@ -155,7 +169,20 @@ func (s *Store) SummariesFor(sessionID string) []Summary {
 			out = append(out, v)
 		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
+	sortSummaries(out)
+	return out
+}
+
+// AllSummaries returns every summary in the store, ordered as SummariesFor
+// orders one session's. The fold-back picker offers summaries from every
+// session, not just the one the cursor is in: folding a branch back is the
+// whole point, and the branch is by definition a different session.
+func (s *Store) AllSummaries() []Summary {
+	out := make([]Summary, 0, len(s.Summaries))
+	for _, v := range s.Summaries {
+		out = append(out, v)
+	}
+	sortSummaries(out)
 	return out
 }
 

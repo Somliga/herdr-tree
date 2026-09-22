@@ -268,3 +268,48 @@ func TestConcurrentSavesKeepBothSummaries(t *testing.T) {
 		t.Fatalf("a summary was discarded by the other pane's save: %+v", final.Summaries)
 	}
 }
+
+// The picker in the overlay is navigated by position, and summaries come out
+// of a map whose iteration order Go randomises per call. Equal CreatedAt is
+// ordinary — a caller may leave it zero, and two summaries made in the same
+// second tie — so the tie-break is what stops the list reshuffling under the
+// cursor between opens.
+func TestSummaryOrderIsStableAcrossCalls(t *testing.T) {
+	s := &Store{Version: 1, Branches: map[string]Branch{}}
+	same := time.Date(2026, 9, 22, 10, 0, 0, 0, time.UTC)
+	for _, span := range [][2]string{{"t1", "t2"}, {"t3", "t4"}, {"t5", "t6"}} {
+		s.AddSummary(Summary{Text: "x", SessionID: "sess", FromTurn: span[0], ToTurn: span[1], CreatedAt: same})
+	}
+	s.AddSummary(Summary{Text: "x", SessionID: "other", FromTurn: "u1", ToTurn: "u2", CreatedAt: same})
+
+	key := func(got []Summary) (out []string) {
+		for _, v := range got {
+			out = append(out, SummaryKey(v.SessionID, v.FromTurn, v.ToTurn))
+		}
+		return out
+	}
+	first, firstAll := key(s.SummariesFor("sess")), key(s.AllSummaries())
+	if len(first) != 3 || len(firstAll) != 4 {
+		t.Fatalf("setup: got %v and %v", first, firstAll)
+	}
+	for i := 0; i < 20; i++ {
+		if got := key(s.SummariesFor("sess")); !equalStrings(got, first) {
+			t.Fatalf("call %d reordered SummariesFor: %v then %v", i, first, got)
+		}
+		if got := key(s.AllSummaries()); !equalStrings(got, firstAll) {
+			t.Fatalf("call %d reordered AllSummaries: %v then %v", i, firstAll, got)
+		}
+	}
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}

@@ -65,29 +65,52 @@ func TestRenderRowMarksGraft(t *testing.T) {
 	}
 }
 
-// fakeAdapter lets the update loop be tested without Herdr or Claude.
-type fakeAdapter struct{ resumeErr error }
+// fakeAdapter lets the update loop be tested without Herdr or Claude. Its
+// methods record what they were asked to do: a graft and a summary are both
+// real work with real cost, so the assertions that matter are about which of
+// them ran, with what.
+type fakeAdapter struct {
+	resumeErr    error
+	summary      string
+	summariseErr error
+	seedErr      error
 
-func (f fakeAdapter) Name() string                               { return "fake" }
-func (f fakeAdapter) Discover(string) ([]adapter.Session, error) { return nil, nil }
-func (f fakeAdapter) Current(adapter.Pane) (string, error)       { return "", nil }
-func (f fakeAdapter) Preview(adapter.Session, string) (int, int, int64, error) {
+	summarisedFrom, summarisedTo string
+	seededWith                   string
+	resumed                      string
+}
+
+func (f *fakeAdapter) Name() string                               { return "fake" }
+func (f *fakeAdapter) Discover(string) ([]adapter.Session, error) { return nil, nil }
+func (f *fakeAdapter) Current(adapter.Pane) (string, error)       { return "", nil }
+func (f *fakeAdapter) Preview(adapter.Session, string) (int, int, int64, error) {
 	return 1, 2, 3, nil
 }
-func (f fakeAdapter) Branch(adapter.Session, string, string) (string, error) { return "new-sid", nil }
-func (f fakeAdapter) BranchSeeded(adapter.Session, string, string, string) (string, error) {
+func (f *fakeAdapter) Branch(adapter.Session, string, string) (string, error) { return "new-sid", nil }
+func (f *fakeAdapter) BranchSeeded(_ adapter.Session, _, _, seed string) (string, error) {
+	if f.seedErr != nil {
+		return "", f.seedErr
+	}
+	f.seededWith = seed
 	return "new-sid", nil
 }
-func (f fakeAdapter) Resume(string, string) error { return f.resumeErr }
-func (f fakeAdapter) Summarise(adapter.Session, string, string) (string, error) {
-	return "a summary", nil
+func (f *fakeAdapter) Resume(sessionID, _ string) error {
+	f.resumed = sessionID
+	return f.resumeErr
+}
+func (f *fakeAdapter) Summarise(_ adapter.Session, fromTurn, toTurn string) (string, error) {
+	f.summarisedFrom, f.summarisedTo = fromTurn, toTurn
+	if f.summariseErr != nil {
+		return "", f.summariseErr
+	}
+	return f.summary, nil
 }
 
 func TestFailedResumeKeepsTheOverlayOpen(t *testing.T) {
 	// Bubble Tea discards its final frame when leaving the alt screen, so a
 	// status set while quitting is never read. A failure must not quit.
 	n := &tree.Node{Node: adapter.Node{ID: "n1", Title: "x"}, SessionID: "sid-a"}
-	u := uiModel{m: New([]*tree.Node{n}), a: fakeAdapter{resumeErr: errors.New("pane split refused")}}
+	u := uiModel{m: New([]*tree.Node{n}), a: &fakeAdapter{resumeErr: errors.New("pane split refused")}}
 
 	cmd := resumeCmd(u.a, n, "sid-a-cwd")
 	msg, ok := cmd().(actionDoneMsg)
@@ -113,7 +136,7 @@ func TestFailedResumeKeepsTheOverlayOpen(t *testing.T) {
 
 func TestSuccessfulResumeQuits(t *testing.T) {
 	n := &tree.Node{Node: adapter.Node{ID: "n1", Title: "x"}, SessionID: "sid-a"}
-	u := uiModel{m: New([]*tree.Node{n}), a: fakeAdapter{}}
+	u := uiModel{m: New([]*tree.Node{n}), a: &fakeAdapter{}}
 
 	msg := resumeCmd(u.a, n, "sid-a-cwd")().(actionDoneMsg)
 	if !msg.quit {
@@ -130,7 +153,7 @@ func TestSuccessfulResumeQuits(t *testing.T) {
 
 func TestKeystrokesAreIgnoredWhileAnActionIsInFlight(t *testing.T) {
 	n := &tree.Node{Node: adapter.Node{ID: "n1", Title: "x"}, SessionID: "sid-a"}
-	u := uiModel{m: New([]*tree.Node{n}), a: fakeAdapter{}, busy: "opening session…"}
+	u := uiModel{m: New([]*tree.Node{n}), a: &fakeAdapter{}, busy: "opening session…"}
 
 	after, _ := u.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'b'}})
 	if after.(uiModel).confirm != "" {
@@ -229,7 +252,7 @@ func TestConfirmTextNamesWhatIsCarried(t *testing.T) {
 
 func TestEnterOnSessionLeafResumesWithoutConfirming(t *testing.T) {
 	n := &tree.Node{Node: adapter.Node{ID: "n1", Title: "x"}, SessionID: "sid-a", IsSessionLeaf: true}
-	u := uiModel{m: New([]*tree.Node{n}), a: fakeAdapter{}}
+	u := uiModel{m: New([]*tree.Node{n}), a: &fakeAdapter{}}
 
 	after, cmd := u.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	got := after.(uiModel)
@@ -250,7 +273,7 @@ func TestEnterOnSessionLeafResumesWithoutConfirming(t *testing.T) {
 
 func TestEnterOnEarlierTurnConfirmsAndWritesNothingUntilConfirmed(t *testing.T) {
 	n := &tree.Node{Node: adapter.Node{ID: "n1", Title: "an earlier turn"}, SessionID: "sid-a"}
-	u := uiModel{m: New([]*tree.Node{n}), a: fakeAdapter{}}
+	u := uiModel{m: New([]*tree.Node{n}), a: &fakeAdapter{}}
 
 	after, cmd := u.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	got := after.(uiModel)
@@ -276,7 +299,7 @@ func TestEnterOnEarlierTurnConfirmsAndWritesNothingUntilConfirmed(t *testing.T) 
 
 func TestEnterOnBrokenRowDoesNothing(t *testing.T) {
 	n := &tree.Node{Node: adapter.Node{ID: "n1", Title: "x"}, SessionID: "sid-a", Broken: true}
-	u := uiModel{m: New([]*tree.Node{n}), a: fakeAdapter{}}
+	u := uiModel{m: New([]*tree.Node{n}), a: &fakeAdapter{}}
 
 	after, cmd := u.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	got := after.(uiModel)
@@ -290,7 +313,7 @@ func TestEnterOnBrokenRowDoesNothing(t *testing.T) {
 
 func TestBKeyNoLongerBranches(t *testing.T) {
 	n := &tree.Node{Node: adapter.Node{ID: "n1", Title: "x"}, SessionID: "sid-a"}
-	u := uiModel{m: New([]*tree.Node{n}), a: fakeAdapter{}}
+	u := uiModel{m: New([]*tree.Node{n}), a: &fakeAdapter{}}
 
 	after, cmd := u.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'b'}})
 	if cmd != nil {
@@ -326,3 +349,333 @@ func TestScopeToggleKeepsAnActiveRange(t *testing.T) {
 		t.Fatalf("a scope toggle discarded the in-progress range: %v", u.m.RangeEnd)
 	}
 }
+
+// loadedStore is a real store on a temporary path. A hand-built Store has no
+// path, so Save fails — and foldBackCmd correctly stops before opening the
+// session when the edge could not be recorded, which makes every success path
+// untestable against a fixture that cannot occur in reality.
+func loadedStore(t *testing.T) *store.Store {
+	t.Helper()
+	t.Setenv("HERDR_PLUGIN_CONFIG_DIR", t.TempDir())
+	st, err := store.Load("/repo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return st
+}
+
+// session builds the forest the real code builds: tree.Build is the only
+// thing that makes tree.Nodes in production, and it is what sets IsHead,
+// IsSessionRoot and IsSessionLeaf. Hand-built chains have got those wrong
+// before.
+func session(id string, turns ...string) []*tree.Node {
+	sess := adapter.Session{ID: id, Title: id, CWD: "/repo", Path: "/transcripts/" + id + ".jsonl"}
+	for _, t := range turns {
+		sess.Nodes = append(sess.Nodes, adapter.Node{ID: t, Title: "turn " + t, Kind: adapter.KindHuman})
+	}
+	return tree.Build([]adapter.Session{sess}, &store.Store{Version: 1, Branches: map[string]store.Branch{}})
+}
+
+func TestSummariseStoresTheRangeAndKeepsTheOverlayOpen(t *testing.T) {
+	st := loadedStore(t)
+	roots := session("s", "t1", "t2", "t3")
+	m := New(roots)
+	from, to := m.Rows()[0].Node, m.Rows()[2].Node
+
+	fa := &fakeAdapter{summary: "it went well"}
+	msg := summariseCmd(fa, st, from, to)().(actionDoneMsg)
+
+	if msg.quit {
+		t.Fatal("summarising must not close the overlay: nothing has been opened")
+	}
+	if fa.summarisedFrom != "t1" || fa.summarisedTo != "t3" {
+		t.Fatalf("summarised %q..%q, want t1..t3", fa.summarisedFrom, fa.summarisedTo)
+	}
+	got := st.SummariesFor("s")
+	if len(got) != 1 {
+		t.Fatalf("got %d summaries for s, want 1", len(got))
+	}
+	if got[0].Text != "it went well" {
+		t.Fatal("the stored summary is not the model's text")
+	}
+	if got[0].FromTurn != "t1" || got[0].ToTurn != "t3" {
+		t.Fatalf("stored span %q..%q, want t1..t3", got[0].FromTurn, got[0].ToTurn)
+	}
+}
+
+func TestFailedSummariseStoresNothingAndKeepsTheOverlayOpen(t *testing.T) {
+	st := loadedStore(t)
+	roots := session("s", "t1", "t2")
+	m := New(roots)
+
+	fa := &fakeAdapter{summariseErr: errors.New("claude: credit balance too low")}
+	msg := summariseCmd(fa, st, m.Rows()[0].Node, m.Rows()[1].Node)().(actionDoneMsg)
+
+	if msg.quit {
+		t.Fatal("a failed summarise must not quit: the message would never be seen")
+	}
+	if !strings.Contains(msg.status, "credit balance too low") {
+		t.Fatalf("status does not carry the cause: %q", msg.status)
+	}
+	if len(st.SummariesFor("s")) != 0 {
+		t.Fatal("a failed summarise recorded a summary")
+	}
+}
+
+func TestFoldBackAtAnEarlierTurnSeedsAGraft(t *testing.T) {
+	fa := &fakeAdapter{}
+	st := loadedStore(t)
+	at := New(session("s", "t1", "t2")).Rows()[0].Node // an earlier turn, not the tip
+	sum := store.Summary{Text: "what the branch found", SessionID: "other", FromTurn: "a", ToTurn: "b"}
+
+	msg := foldBackCmd(fa, st, at, "/repo", sum, "", nil)().(actionDoneMsg)
+
+	if fa.seededWith == "" {
+		t.Fatal("an earlier turn must be seeded via BranchSeeded")
+	}
+	if !strings.HasPrefix(fa.seededWith, claudeSummaryPrefix) {
+		t.Fatal("the seed is not marked as a summary; GraftSeeded would refuse it")
+	}
+	if !strings.Contains(fa.seededWith, sum.Text) {
+		t.Fatal("the seed lost the summary text")
+	}
+	if fa.resumed != "new-sid" {
+		t.Fatalf("the new session was not opened: resumed %q", fa.resumed)
+	}
+	if !msg.quit {
+		t.Fatal("a successful fold-back opens the new session and closes the overlay")
+	}
+	if _, ok := st.Branches["new-sid"]; !ok {
+		t.Fatalf("no graft edge recorded: %+v", st.Branches)
+	}
+}
+
+func TestFoldBackOfThisLinesOwnSummaryIsMarkedAsCompaction(t *testing.T) {
+	// Compaction is fold-back with the range's own line as the destination.
+	// Only the prefix distinguishes the two, and the classifier and the
+	// palette read nothing else — so getting it wrong makes every compaction
+	// render as an import.
+	fa := &fakeAdapter{}
+	st := loadedStore(t)
+	at := New(session("s", "t1", "t2", "t3")).Rows()[0].Node
+	sum := store.Summary{Text: "eight turns of auth work", SessionID: "s", FromTurn: "t2", ToTurn: "t3"}
+
+	foldBackCmd(fa, st, at, "/repo", sum, "", nil)()
+
+	if !strings.HasPrefix(fa.seededWith, claudeCompactionPrefix) {
+		t.Fatal("a summary of this same session must seed as a compaction")
+	}
+}
+
+func TestFoldBackAtTheLiveTipSendsAMessage(t *testing.T) {
+	fa := &fakeAdapter{}
+	st := loadedStore(t)
+	rows := New(session("s", "t1", "t2")).Rows()
+	tip := rows[len(rows)-1].Node
+	if !tip.IsSessionLeaf {
+		t.Fatal("setup: the last row of a session is its leaf")
+	}
+	sum := store.Summary{Text: "folded", SessionID: "other", FromTurn: "a", ToTurn: "b"}
+
+	var gotAgent, gotText string
+	send := func(agent, text string) error { gotAgent, gotText = agent, text; return nil }
+	msg := foldBackCmd(fa, st, tip, "/repo", sum, "tree-agent", send)().(actionDoneMsg)
+
+	if fa.seededWith != "" {
+		t.Fatal("the live tip must not be grafted: a 6.6MB copy to deliver one message")
+	}
+	if gotAgent != "tree-agent" {
+		t.Fatalf("sent to agent %q, want tree-agent", gotAgent)
+	}
+	if !strings.HasPrefix(gotText, claudeSummaryPrefix) || !strings.Contains(gotText, sum.Text) {
+		t.Fatal("the message is not the marked summary")
+	}
+	if !msg.quit {
+		t.Fatal("a delivered message closes the overlay: the conversation is where to look next")
+	}
+	if len(st.Branches) != 0 {
+		t.Fatalf("a message must not record a graft edge: %+v", st.Branches)
+	}
+}
+
+func TestABlockedAgentSurfacesAndDoesNotGraftInstead(t *testing.T) {
+	// The user asked to continue a conversation. Forking one instead gives
+	// them two lines where they expected one, and they will not notice.
+	fa := &fakeAdapter{}
+	st := loadedStore(t)
+	rows := New(session("s", "t1", "t2")).Rows()
+	tip := rows[len(rows)-1].Node
+
+	blocked := errors.New("agent is waiting for input of its own")
+	send := func(string, string) error { return blocked }
+	msg := foldBackCmd(fa, st, tip, "/repo",
+		store.Summary{Text: "x", SessionID: "other"}, "tree-agent", send)().(actionDoneMsg)
+
+	if fa.seededWith != "" {
+		t.Fatal("a blocked agent must not fall back to grafting")
+	}
+	if msg.quit {
+		t.Fatal("a failed send must not quit: the message would never be seen")
+	}
+	if !strings.Contains(msg.status, blocked.Error()) {
+		t.Fatalf("status does not say why: %q", msg.status)
+	}
+	if len(st.Branches) != 0 {
+		t.Fatalf("nothing was written, so nothing may be recorded: %+v", st.Branches)
+	}
+}
+
+// s fixes the range's END, the cursor then picks the START, and the cost is
+// shown before a single API call is made.
+func TestSKeyFixesTheRangeEndThenConfirmsBeforeSummarising(t *testing.T) {
+	st := loadedStore(t)
+	fa := &fakeAdapter{summary: "it went well"}
+	roots := session("s", "t1", "t2", "t3")
+	u := uiModel{m: New(roots), a: fa, st: st}
+	u.m.Cursor = 2
+
+	after, cmd := u.Update(key('s'))
+	got := after.(uiModel)
+	if cmd != nil {
+		t.Fatal("fixing the range end must not act")
+	}
+	if got.m.RangeEnd != got.m.Rows()[2].Node {
+		t.Fatalf("the range end is not the row s was pressed on: %+v", got.m.RangeEnd)
+	}
+
+	got.m.Cursor = 0
+	after2, cmd2 := got.Update(key('s'))
+	got2 := after2.(uiModel)
+	if cmd2 != nil {
+		t.Fatal("summarising must not start before the cost is confirmed")
+	}
+	if fa.summarisedTo != "" {
+		t.Fatal("the adapter was called before confirmation")
+	}
+	if !strings.Contains(got2.confirm, "3 row(s)") {
+		t.Fatalf("the confirmation does not say how much is being summarised:\n%s", got2.confirm)
+	}
+	if !strings.Contains(got2.confirm, "turn t1") || !strings.Contains(got2.confirm, "turn t3") {
+		t.Fatalf("the confirmation does not name both ends:\n%s", got2.confirm)
+	}
+
+	after3, cmd3 := got2.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	got3 := after3.(uiModel)
+	if cmd3 == nil {
+		t.Fatal("want summariseCmd once confirmed")
+	}
+	if got3.busy == "" {
+		t.Fatal("want the overlay to say an API call is in flight")
+	}
+	if got3.m.RangeEnd != nil {
+		t.Fatal("acting on a range consumes it")
+	}
+	if msg := cmd3().(actionDoneMsg); msg.quit {
+		t.Fatal("summarising must not close the overlay")
+	}
+	if fa.summarisedFrom != "t1" || fa.summarisedTo != "t3" {
+		t.Fatalf("summarised %q..%q, want t1..t3 in document order", fa.summarisedFrom, fa.summarisedTo)
+	}
+}
+
+func TestEscCancelsAnInProgressRangeInsteadOfClosing(t *testing.T) {
+	u := uiModel{m: New(session("s", "t1", "t2")), a: &fakeAdapter{}}
+	u.m.Cursor = 1
+	u.m.BeginRange()
+
+	after, cmd := u.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	got := after.(uiModel)
+	if got.quitting || cmd != nil {
+		t.Fatal("esc with a range in progress must not close the overlay")
+	}
+	if got.m.RangeEnd != nil {
+		t.Fatal("esc must cancel the range")
+	}
+
+	// and with no range it still closes
+	after2, cmd2 := got.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if !after2.(uiModel).quitting || cmd2 == nil {
+		t.Fatal("esc with no range must still close the overlay")
+	}
+}
+
+func TestPWithNoSummariesOffersToMakeOneRatherThanRefusing(t *testing.T) {
+	st := loadedStore(t)
+	u := uiModel{m: New(session("s", "t1", "t2")), a: &fakeAdapter{}, st: st}
+
+	after, cmd := u.Update(key('p'))
+	got := after.(uiModel)
+	if cmd != nil || got.picking != nil {
+		t.Fatal("there is nothing to pick")
+	}
+	if !strings.Contains(got.status, "s summarises") {
+		t.Fatalf("the offer does not say how to get a summary: %q", got.status)
+	}
+}
+
+func TestPickerFoldsTheChosenSummaryInAtTheSelectedTurn(t *testing.T) {
+	st := loadedStore(t)
+	st.AddSummary(store.Summary{Text: "what the branch found", SessionID: "other", FromTurn: "a", ToTurn: "b"})
+	fa := &fakeAdapter{}
+	u := uiModel{m: New(session("s", "t1", "t2")), a: fa, st: st, repoRoot: "/repo"}
+	u.m.Cursor = 0 // an earlier turn
+
+	after, _ := u.Update(key('p'))
+	got := after.(uiModel)
+	if len(got.picking) != 1 || got.pickAt != got.m.Rows()[0].Node {
+		t.Fatalf("the picker did not open on the selected turn: %+v", got.pickAt)
+	}
+	if !strings.Contains(got.View(), "NEW session") {
+		t.Fatalf("the picker does not say what enter will do:\n%s", got.View())
+	}
+
+	after2, cmd := got.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("want foldBackCmd on enter")
+	}
+	if after2.(uiModel).picking != nil {
+		t.Fatal("the picker should close once acted on")
+	}
+	if msg := cmd().(actionDoneMsg); !msg.quit {
+		t.Fatalf("want the fold-back to succeed: %q", msg.status)
+	}
+	if !strings.HasPrefix(fa.seededWith, claudeSummaryPrefix) {
+		t.Fatal("the chosen summary was not seeded into the graft")
+	}
+	if !strings.Contains(fa.seededWith, "what the branch found") {
+		t.Fatal("the seed does not carry the summary the picker was on")
+	}
+}
+
+// Only the tip of the session the user is actually in can take a message. A
+// leaf of some other session is the end of a conversation nobody is holding,
+// and sending there would deliver the summary into the wrong agent.
+func TestOnlyTheLiveSessionsTipIsSentTo(t *testing.T) {
+	st := loadedStore(t)
+	st.AddSummary(store.Summary{Text: "folded", SessionID: "other", FromTurn: "a", ToTurn: "b"})
+	fa := &fakeAdapter{}
+	sent := 0
+	u := uiModel{
+		m: New(session("s", "t1", "t2")), a: fa, st: st, repoRoot: "/repo",
+		current: "somebody-else", liveAgent: "tree-agent",
+		send: func(string, string) error { sent++; return nil },
+	}
+	rows := u.m.Rows()
+	u.m.Cursor = len(rows) - 1 // this session's tip, but not the live session
+
+	after, _ := u.Update(key('p'))
+	got := after.(uiModel)
+	if strings.Contains(got.View(), "tree-agent") {
+		t.Fatalf("the picker offers to message an agent that is not on this session:\n%s", got.View())
+	}
+	_, cmd := got.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	cmd()
+	if sent != 0 {
+		t.Fatal("a summary was sent to the agent of a different session")
+	}
+	if fa.seededWith == "" {
+		t.Fatal("a tip nobody is holding must be grafted")
+	}
+}
+
+func key(r rune) tea.KeyMsg { return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}} }

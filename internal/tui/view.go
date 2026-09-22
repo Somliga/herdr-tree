@@ -20,6 +20,46 @@ func shortID(s string) string {
 	return s
 }
 
+// claudeSummaryPrefix and claudeCompactionPrefix mirror claude.SummaryPrefix
+// and claude.CompactionPrefix. internal/tui must not import internal/claude,
+// so the markers are duplicated deliberately — they are three words and the
+// package boundary is worth more. A test in cmd/herdr-tree, which imports
+// both, asserts the two pairs agree.
+const (
+	claudeSummaryPrefix    = "⤶ summary of"
+	claudeCompactionPrefix = "⤶ compacted"
+)
+
+// SummaryPrefix and CompactionPrefix expose those copies to cmd/herdr-tree,
+// the one package that imports both this and internal/claude, so a test there
+// can assert they still agree. They are aliases rather than the definitions
+// because the markers belong to the transcript format, not to the view.
+const (
+	SummaryPrefix    = claudeSummaryPrefix
+	CompactionPrefix = claudeCompactionPrefix
+)
+
+// title reduces text to one line of at most max runes. A summary is several
+// paragraphs; anything that becomes a row label has to be one line or it
+// breaks the tree it is drawn in.
+func title(text string, max int) string {
+	var line string
+	for _, l := range strings.Split(text, "\n") {
+		if strings.TrimSpace(l) != "" {
+			line = strings.TrimSpace(l)
+			break
+		}
+	}
+	r := []rune(line)
+	if len(r) <= max {
+		return line
+	}
+	if max < 1 {
+		return ""
+	}
+	return string(r[:max-1]) + "…"
+}
+
 func humanBytes(n int64) string {
 	switch {
 	case n >= 1<<20:
@@ -127,6 +167,24 @@ type uiModel struct {
 	busy     string // non-empty while an adapter call is in flight
 	quitting bool
 
+	// send delivers text to a live agent, and liveAgent names the agent
+	// running u.current. Both are injected by Run so this package keeps its
+	// boundary — and so the tip-append path, the riskiest assumption in v2,
+	// is testable without a running Herdr.
+	send      SendFunc
+	liveAgent string
+
+	// pending is what the confirmation dialog will run if it is accepted,
+	// captured when the dialog is raised rather than recomputed on enter.
+	pending     tea.Cmd
+	pendingBusy string
+
+	// picking is the fold-back picker: the summaries on offer, the cursor
+	// within them, and the turn the chosen one lands on.
+	picking []store.Summary
+	pickIdx int
+	pickAt  *tree.Node
+
 	labelling *tree.Node // non-nil while typing a label
 	labelText string
 
@@ -228,6 +286,144 @@ func branchCmd(a adapter.Adapter, st *store.Store, n *tree.Node, dst string) tea
 	}
 }
 
+// summariseConfirmText reports what summarising this range will cost.
+//
+// The counts are Preview's at the range's END, not the range's own: a summary
+// is produced by grafting up to the end of the range and asking the model to
+// describe the tail of it, so the model reads the whole conversation up to
+// there. On a long trunk that prefix is the expensive part, and §4 is explicit
+// that the confirmation must say so rather than quote the range alone.
+func summariseConfirmText(from, to *tree.Node, rows, turns, entries int, size int64) string {
+	return fmt.Sprintf(
+		"Summarise %d row(s):\n\n  from  %q\n  to    %q\n\nThe model reads this session up to the end of the range — %d turn(s) · %d entries · %s — and describes only the range. That whole prefix is billed.\n\nNothing is written to the session; the summary is stored in the tree.\n\n[enter] summarise   [esc] cancel",
+		rows, from.Node.Title, to.Node.Title, turns, entries, humanBytes(size))
+}
+
+// SendFunc delivers text to a live agent. It is injected rather than called
+// directly so internal/tui keeps its package boundary — and so the tip-append
+// path, which is the riskiest assumption in v2, is testable without a running
+// Herdr. cmd/herdr-tree wires it to herdr.AgentPrompt.
+type SendFunc func(agent, text string) error
+
+func summariseCmd(a adapter.Adapter, st *store.Store, from, to *tree.Node) tea.Cmd {
+	return func() tea.Msg {
+		src := adapter.Session{ID: from.SessionID, CWD: from.SessionCWD, Path: from.SessionPath}
+		text, err := a.Summarise(src, from.Node.ID, to.Node.ID)
+		if err != nil {
+			return actionDoneMsg{status: "summarise failed: " + err.Error()}
+		}
+		st.AddSummary(store.Summary{
+			Text: text, SessionID: from.SessionID,
+			FromTurn: from.Node.ID, ToTurn: to.Node.ID,
+			CreatedAt: time.Now().UTC(),
+		})
+		if err := st.Save(); err != nil {
+			return actionDoneMsg{status: "summarised, but not saved: " + err.Error()}
+		}
+		// Deliberately does not quit: a summary is generated so it can be
+		// folded back, and the user is one `p` away from doing that.
+		return actionDoneMsg{status: "summarised " + shortID(from.SessionID) + " — press p on a turn to fold it back"}
+	}
+}
+
+// foldBackSeed composes the injected turn's text.
+//
+// A summary of a DIFFERENT session arriving here is an import: knowledge came
+// in from a line that was abandoned. A summary of THIS session's own turns is
+// a compaction: the line contracted and nothing new arrived. The two are the
+// same operation and the same machinery — only this prefix tells them apart,
+// and the classifier and the palette read nothing else.
+func foldBackSeed(at *tree.Node, sum store.Summary) string {
+	if sum.SessionID == at.SessionID {
+		return claudeCompactionPrefix + " " + shortID(sum.FromTurn) + ".." + shortID(sum.ToTurn) + "\n\n" + sum.Text
+	}
+	return claudeSummaryPrefix + " " + shortID(sum.SessionID) + "\n\n" + sum.Text
+}
+
+// foldBackCmd appends a summary at a chosen turn.
+//
+// At the live session's tip the summary is simply the next message, and Herdr
+// can deliver it: no graft, no copy, no new session. Anywhere else the
+// timeline is changing shape, so it is a rewind seeded with the summary.
+//
+// A failed send does NOT fall back to grafting. The user asked to continue a
+// conversation; handing them a fork instead gives them two lines where they
+// expected one, and they will not notice until much later.
+func foldBackCmd(a adapter.Adapter, st *store.Store, at *tree.Node, dst string, sum store.Summary, liveAgent string, send SendFunc) tea.Cmd {
+	return func() tea.Msg {
+		seed := foldBackSeed(at, sum)
+		if at.IsSessionLeaf && liveAgent != "" && send != nil {
+			if err := send(liveAgent, seed); err != nil {
+				return actionDoneMsg{status: "not sent to " + liveAgent + ": " + err.Error() + " — nothing was written"}
+			}
+			return actionDoneMsg{status: "sent to " + liveAgent, quit: true}
+		}
+		src := adapter.Session{ID: at.SessionID, CWD: at.SessionCWD, Path: at.SessionPath}
+		sid, err := a.BranchSeeded(src, at.Node.ID, dst, seed)
+		if err != nil {
+			return actionDoneMsg{status: "fold back failed: " + err.Error()}
+		}
+		// Record the edge before resuming: the transcript now exists, so the
+		// branch must survive even if opening it fails.
+		st.Add(sid, store.Branch{
+			GraftedFrom: store.From{SessionID: at.SessionID, Node: at.Node.ID},
+			Title:       "⤶ " + title(sum.Text, 40),
+			CreatedAt:   time.Now().UTC(),
+		})
+		if err := st.Save(); err != nil {
+			return actionDoneMsg{status: "folded " + shortID(sid) + ", but the tree was not saved: " + err.Error()}
+		}
+		if err := a.Resume(sid, dst); err != nil {
+			return actionDoneMsg{status: "folded " + shortID(sid) + ", but it did not open: " + err.Error()}
+		}
+		return actionDoneMsg{status: "folded into " + shortID(sid), quit: true}
+	}
+}
+
+// agentFor is the live agent to send to when appending at n, and "" when
+// there is none. Only the tip of the session the user is actually in can take
+// a message; every other leaf belongs to a session nobody is holding, and a
+// name for the wrong session would deliver the summary into someone else's
+// conversation.
+func (u uiModel) agentFor(n *tree.Node) string {
+	if n.SessionID != "" && n.SessionID == u.current {
+		return u.liveAgent
+	}
+	return ""
+}
+
+// summariseConfirm raises the cost dialog for the range in progress.
+func (u uiModel) summariseConfirm() (tea.Model, tea.Cmd) {
+	from, to, ok := u.m.RangeSpan()
+	if !ok {
+		u.m.CancelRange()
+		u.status = "the range is no longer on screen"
+		return u, nil
+	}
+	if from.SessionID != to.SessionID {
+		// Summarise grafts one transcript at the range's end and names the
+		// start turn in it; a start that lives in another session is not in
+		// that transcript at all. The range stays put so it can be adjusted.
+		u.status = "a range must stay inside one session"
+		return u, nil
+	}
+	rows := 0
+	for _, r := range u.m.Rows() {
+		if r.InRange {
+			rows++
+		}
+	}
+	src := adapter.Session{ID: to.SessionID, CWD: to.SessionCWD, Path: to.SessionPath}
+	turns, entries, size, err := u.a.Preview(src, to.Node.ID)
+	if err != nil {
+		u.status = "cannot summarise this range: " + err.Error()
+		return u, nil
+	}
+	u.confirm = summariseConfirmText(from, to, rows, turns, entries, size)
+	u.pending, u.pendingBusy = summariseCmd(u.a, u.st, from, to), "summarising…"
+	return u, nil
+}
+
 func (u uiModel) Init() tea.Cmd { return nil }
 
 func (u uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -273,23 +469,57 @@ func (u uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return u, nil
 		}
+		if u.picking != nil {
+			switch msg.String() {
+			case "up", "k":
+				if u.pickIdx > 0 {
+					u.pickIdx--
+				}
+			case "down", "j":
+				if u.pickIdx < len(u.picking)-1 {
+					u.pickIdx++
+				}
+			case "enter":
+				sum, at := u.picking[u.pickIdx], u.pickAt
+				u.picking, u.pickAt, u.pickIdx = nil, nil, 0
+				u.busy = "folding back…"
+				return u, foldBackCmd(u.a, u.st, at, u.dstCWD(at), sum, u.agentFor(at), u.send)
+			case "esc", "q":
+				u.picking, u.pickAt, u.pickIdx = nil, nil, 0
+			}
+			return u, nil
+		}
 		if u.confirm != "" {
 			switch msg.String() {
 			case "enter":
-				n := u.m.Selected()
-				u.confirm = ""
-				if n == nil {
+				cmd, busy := u.pending, u.pendingBusy
+				u.confirm, u.pending, u.pendingBusy = "", nil, ""
+				if cmd == nil {
 					return u, nil
 				}
-				u.busy = "branching…"
-				return u, branchCmd(u.a, u.st, n, u.dstCWD(n))
+				u.m.CancelRange() // acted on; a summarise consumes its range
+				u.busy = busy
+				return u, cmd
 			case "esc", "q":
-				u.confirm = ""
+				// The range survives: escaping the cost dialog is how you go
+				// back and move the range's start, not how you abandon it.
+				u.confirm, u.pending, u.pendingBusy = "", nil, ""
 			}
 			return u, nil
 		}
 		switch msg.String() {
-		case "q", "esc", "ctrl+c":
+		case "esc":
+			// A range in progress is what esc abandons. Quitting here would
+			// take the overlay down with it, which is not what "never mind"
+			// means when you are halfway through selecting something.
+			if u.m.RangeEnd != nil {
+				u.m.CancelRange()
+				u.status = "range cancelled"
+				return u, nil
+			}
+			u.quitting = true
+			return u, tea.Quit
+		case "q", "ctrl+c":
 			u.quitting = true
 			return u, tea.Quit
 		case "up", "k":
@@ -300,7 +530,32 @@ func (u uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			u.m.Fold()
 		case "right", "l":
 			u.m.Unfold()
+		case "s":
+			if u.m.RangeEnd == nil {
+				// The END first: "summarise what I just did" is how the
+				// thought arrives, and the cursor is already there.
+				u.m.BeginRange()
+				u.status = "range end fixed — move to its start, then s or ⏎ (esc cancels)"
+				return u, nil
+			}
+			return u.summariseConfirm()
+		case "p":
+			n := u.m.Selected()
+			if n == nil || n.Broken || n.Node.ID == "" {
+				return u, nil
+			}
+			sums := u.st.AllSummaries()
+			if len(sums) == 0 {
+				// Offered, never forced: say where a summary comes from
+				// rather than refusing the key.
+				u.status = "no summaries yet — s summarises a range, then p folds it back in"
+				return u, nil
+			}
+			u.picking, u.pickIdx, u.pickAt = sums, 0, n
 		case "enter":
+			if u.m.RangeEnd != nil {
+				return u.summariseConfirm()
+			}
 			n := u.m.Selected()
 			if n == nil || n.Broken {
 				return u, nil
@@ -318,6 +573,7 @@ func (u uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return u, nil
 			}
 			u.confirm = confirmText(n, turns, entries, size, u.dstCWD(n))
+			u.pending, u.pendingBusy = branchCmd(u.a, u.st, n, u.dstCWD(n)), "branching…"
 		case "a":
 			u.scopeAll = !u.scopeAll
 			u.rebuild()
@@ -335,6 +591,34 @@ func (u uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return u, nil
 }
 
+// pickerView lists the summaries on offer and says, in words, which of the
+// two mechanisms the chosen one will use. The distinction is not cosmetic —
+// one continues the conversation the user is in, the other starts a second
+// line — so it is stated before the key that commits to it, not after.
+func (u uiModel) pickerView() string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Fold a summary in at:  %q\n\n", u.pickAt.Node.Title)
+	for i, s := range u.picking {
+		marker := "  "
+		if i == u.pickIdx {
+			marker = "> "
+		}
+		kind := "from " + shortID(s.SessionID)
+		if s.SessionID == u.pickAt.SessionID {
+			kind = "compacts " + shortID(s.FromTurn) + ".." + shortID(s.ToTurn)
+		}
+		fmt.Fprintf(&b, "%s%-28s %s\n", marker, kind, title(s.Text, 48))
+	}
+	b.WriteString("\n")
+	if agent := u.agentFor(u.pickAt); agent != "" && u.pickAt.IsSessionLeaf && u.send != nil {
+		fmt.Fprintf(&b, "Sends it to %s as your next message. Nothing is copied.\n", agent)
+	} else {
+		b.WriteString("Starts a NEW session that rewinds to this turn and carries the summary.\n")
+	}
+	b.WriteString("\n↑↓ choose   [enter] fold back   [esc] cancel\n")
+	return b.String()
+}
+
 func (u uiModel) View() string {
 	if u.quitting {
 		return ""
@@ -345,6 +629,9 @@ func (u uiModel) View() string {
 	}
 	if u.confirm != "" {
 		return u.confirm + "\n"
+	}
+	if u.picking != nil {
+		return u.pickerView()
 	}
 	var b strings.Builder
 	if len(u.m.Rows()) == 0 {
@@ -372,7 +659,13 @@ func (u uiModel) View() string {
 	if u.scopeAll {
 		scope = "all sessions"
 	}
-	b.WriteString(fmt.Sprintf("↑↓ move  ←→ fold  ⏎ continue from here  L label  a scope:%s  f filter:%s  esc close\n", scope, u.m.Filter))
+	if u.m.RangeEnd != nil {
+		// While a range is being selected, three keys change meaning. Saying
+		// so is cheaper than the user discovering that esc no longer closes.
+		b.WriteString("↑↓ move to the range's start  s/⏎ summarise  esc cancel range\n")
+	} else {
+		b.WriteString(fmt.Sprintf("↑↓ move  ←→ fold  ⏎ continue  s summarise  p fold back  L label  a scope:%s  f filter:%s  esc close\n", scope, u.m.Filter))
+	}
 	if u.busy != "" {
 		b.WriteString(u.busy + "\n")
 	}
@@ -382,10 +675,12 @@ func (u uiModel) View() string {
 	return b.String()
 }
 
-// Run starts the overlay.
-func Run(a adapter.Adapter, repoRoot string, st *store.Store, sessions []adapter.Session, current string) error {
+// Run starts the overlay. liveAgent is the Herdr agent running `current`, and
+// send delivers text to it; both may be zero, in which case a fold-back at
+// that session's tip grafts like any other turn and the picker says so.
+func Run(a adapter.Adapter, repoRoot string, st *store.Store, sessions []adapter.Session, current, liveAgent string, send SendFunc) error {
 	roots := tree.Build(sessions, st)
-	u := uiModel{m: New(roots), a: a, st: st, repoRoot: repoRoot, current: current, roots: roots}
+	u := uiModel{m: New(roots), a: a, st: st, repoRoot: repoRoot, current: current, roots: roots, liveAgent: liveAgent, send: send}
 	u.rebuild() // start scoped to the current session
 	_, err := tea.NewProgram(u, tea.WithAltScreen()).Run()
 	return err
