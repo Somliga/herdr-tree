@@ -72,23 +72,48 @@ The abandoned tail is never deleted, moved or rewritten. It is a session on
 disk and stays one. This is the v1 rule — *never delete a session the user
 could still resume* — and it is what makes rewinding safe to do casually.
 
-## 4. Summarising a branch
+## 4. Summarising a range
 
-On demand, not automatically. `s` on any session's row summarises that session.
+On demand, never automatically, and over a **range of turns** rather than a
+whole session.
 
-Mechanically: `claude -p --resume <sid> --fork-session`, capture stdout, delete
-the fork. Verified in v1: `--fork-session` leaves the source byte-identical and
-writes a separate file we then remove. The summary text is stored in
-`tree.json` against that session.
+`s` on a row fixes the END of the range — the work you have just finished is
+almost always what you want summarised, and it is where you already are. The
+cursor then moves to choose the START, with the range highlighted as you move.
+Confirm, and the summary is generated and stored against that range.
 
-On demand rather than at branch time because a summary costs a real API call
-and most branches are never folded back. A branch you abandon and forget should
-cost nothing.
+A range rather than a session because the two uses want different spans:
 
-The prompt is a template and configurable later. It should ask for: what was
-being attempted, what was decided, what was rejected and why, what was left
+- **On a branch**, the range is usually the whole branch: fold an exploration
+  back to where it started.
+- **On the trunk**, the range is a segment, and summarising it is
+  **compaction**. Summarise turns 5–12, rewind to 5, seed with the summary, and
+  eight turns of exploration become one paragraph you carry on from. The
+  original turns are still on disk, still reachable in the tree, and still
+  branchable.
+
+Compaction is the same operation as fold-back with the range's own start as the
+destination. That is now the third feature that turns out to be rewind-plus-seed,
+which is the clearest argument that the model has the right primitive.
+
+### How the range is summarised
+
+`Graft` the source session at the range's END into a temporary session, resume
+it with a prompt naming the START turn, capture stdout, delete the temporary
+session. The graft is needed because `--resume` always continues at a session's
+tip, and a summary of "up to turn 12" must not see turns 13 onward.
+
+The model therefore sees everything from the session's beginning up to the end
+of the range, and is asked to summarise only the segment. That is deliberate:
+the earlier context is what lets it summarise the segment accurately, and it
+costs tokens for a prefix it will not describe. On a long trunk that is the
+expensive part of this feature, and the confirmation should say so — the
+existing confirm dialog already reports bytes, and this one should too.
+
+The prompt is a template, configurable later. It should ask for: what was being
+attempted, what was decided, what was rejected and why, and what was left
 unfinished. The "why not" matters most — it is the part that stops the trunk
-re-exploring the same dead end.
+re-exploring a dead end it has already paid for.
 
 ## 5. Appending a summary
 
@@ -105,6 +130,23 @@ and the injected text present. The model answered a question that required each.
 That the two operations are the same mechanism is the strongest evidence the
 model is right, and it means §5 is mostly UI over §3.
 
+## 5b. Cascading fold-back
+
+Branches nest, and so do summaries. Branch from the trunk, branch again from
+that branch, summarise the inner one and append it to the outer, then summarise
+the outer — which now contains the inner summary as ordinary conversation — and
+append that to the trunk.
+
+Nothing special is needed for this. Each fold-back is a rewind-plus-seed on the
+immediate parent, and a summary that absorbed another summary is just text. The
+only property the design must preserve is that a summary produced AFTER a
+fold-back includes the folded-in material, which it does automatically because
+the injected entry is part of the transcript being summarised.
+
+What the tree owes the user here is legibility: a point that absorbed a branch
+should say so, and it should still say so after the containing branch is itself
+folded somewhere else.
+
 ## 6. How an injected summary appears
 
 It is not something you typed, and the tree must not pretend otherwise.
@@ -117,8 +159,19 @@ preserved, but Claude Code has never been asked to *accept* a field it does not
 know, so the prefix is the guarantee and the field is the convenience.
 
 In the tree it heads a section, like any turn that starts work, but renders
-distinctly — it is the join point, and the one row where the trunk visibly
-gained something from elsewhere.
+distinctly. Proposed: a `⤶` marker and the source branch's short id, so the row
+reads as a join rather than as something you typed:
+
+```
+  user: thin slice is fine, go with that                    (27)
+  ⤶ summary of f2af34a4 — redis-backed sessions             (14)
+  user: right, carry on with the token service               (9)
+```
+
+This is the one row where the trunk visibly gained something from elsewhere,
+and it is the thing that makes a rewound timeline readable a week later. It
+must survive the containing branch being folded onward — the marker belongs to
+the entry, not to a store record that a later rewind might not carry.
 
 ## 7. What this does not do
 
@@ -159,6 +212,10 @@ gained something from elsewhere.
 1. **Does the trunk need to be visually obvious, or is position enough?** The
    trunk is at depth 0 and branches are indented, which may be sufficient
    without any marker.
+1b. **Range selection direction.** `s` fixes the end and the cursor picks the
+   start, which means moving backwards through the list. That matches how the
+   thought arrives — "summarise what I just did" — but it is the opposite of
+   how most range selections work. Worth trying before committing.
 2. **Should appending a summary offer to summarise first** if the chosen branch
    has none, or refuse and make the user do it explicitly? Offering is fewer
    keystrokes; refusing keeps every API call deliberate.
