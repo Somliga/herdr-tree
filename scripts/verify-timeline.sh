@@ -2,6 +2,10 @@
 # Manual end-to-end check for the v2 timeline. Spends real API budget.
 # Never run this in CI.
 #
+# Cost note: step 1 summarises with whatever model `claude` defaults to, and
+# it sends the transcript from its start up to the range's end. On a large
+# session that is not cheap. Step 2's resume is pinned to haiku on purpose.
+#
 # Usage: scripts/verify-timeline.sh <source-session.jsonl> <from-uuid> <to-uuid>
 #
 # Verifies the two things v2 cannot prove with unit tests:
@@ -71,6 +75,18 @@ reply=$(cd "$work/cwd" && claude -p --model claude-haiku-4-5-20251001 \
 echo "--- reply ---"; echo "$reply"; echo "-------------"
 
 echo
+echo "== 3. exactly one marker on the seeded entry =="
+# Check [5] used to ask the reader to open $graft themselves, but the EXIT
+# trap removes it the moment this script finishes — so it could never
+# actually be done. Count the markers here instead, while the file exists.
+markers=$(tail -n 2 "$graft" | grep -c '⤶ ⤶' || true)
+if [ "$markers" -ne 0 ]; then
+  echo "FAIL: the seeded entry carries a doubled marker (⤶ ⤶)"
+  exit 1
+fi
+echo "ok: no doubled ⤶ in the seeded entry"
+
+echo
 echo "== Checklist: read the output above yourself. These are human judgement, =="
 echo "== not assertions this script can make.                                  =="
 echo
@@ -105,11 +121,11 @@ echo "    with mixed depths in the plugin, check whether the '┃' range marker"
 echo "    is still legible or has started to look like it steps in and out."
 echo
 echo "[5] Exactly one ⤶ marker on a real injected summary (Task 7):"
-echo "    Look at the summary text printed in step 1, and at the grafted file"
-echo "    left behind briefly at: $graft"
-echo "    (it will be removed when this script exits). Count the ⤶ markers at"
-echo "    the start of the seeded entry's text — there must be exactly one,"
-echo "    never '⤶ ⤶ summary of ...'."
+echo "    Checked automatically in step 3 above, against the file this run"
+echo "    actually wrote. What is left for your eyes is the TREE: open the"
+echo "    plugin on a repo that has a real injected summary and confirm the"
+echo "    row reads '⤶ summary of ...' once, not twice — the doubling that"
+echo "    shipped once lived in the renderer, not in the transcript."
 echo
 echo "PASS if [1] and [2] hold. [3], [4], [5] are separate manual checks;"
 echo "record their results in the plan's notes."
