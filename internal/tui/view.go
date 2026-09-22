@@ -32,8 +32,8 @@ func humanBytes(n int64) string {
 }
 
 // renderRow draws one line. Rendering is deliberately plain text so it can
-// be asserted in tests.
-func renderRow(r Row, selected bool, currentSession string, width int) string {
+// be asserted in tests; View applies the StyleKey it returns.
+func renderRow(r Row, selected bool, currentSession string, width int) (string, StyleKey) {
 	var b strings.Builder
 	b.WriteString(strings.Repeat("  ", r.Depth))
 
@@ -59,6 +59,8 @@ func renderRow(r Row, selected bool, currentSession string, width int) string {
 		b.WriteString("assistant: ")
 	case adapter.KindToolCall:
 		// the label already carries its own brackets
+	case adapter.KindSummaryImport, adapter.KindSummaryCompaction:
+		b.WriteString("⤶ ")
 	default:
 		if !r.Node.IsSessionRoot {
 			b.WriteString("user: ")
@@ -80,7 +82,7 @@ func renderRow(r Row, selected bool, currentSession string, width int) string {
 	if width > 0 && len([]rune(line)) > width {
 		line = string([]rune(line)[:width-1]) + "…"
 	}
-	return line
+	return line, styleFor(r.Node, r.OnTrunk)
 }
 
 // confirmText is the branch confirmation, which is where the user is told
@@ -331,7 +333,8 @@ func (u uiModel) View() string {
 		if start+i == u.m.Cursor {
 			marker = "> "
 		}
-		b.WriteString(marker + renderRow(r, start+i == u.m.Cursor, u.current, u.width-2) + "\n")
+		text, key := renderRow(r, start+i == u.m.Cursor, u.current, u.width-2)
+		b.WriteString(marker + render(key, text) + "\n")
 	}
 	if total > 0 {
 		b.WriteString(fmt.Sprintf("\n(%d/%d)\n", u.m.Cursor+1, total))

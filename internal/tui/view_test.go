@@ -15,7 +15,7 @@ import (
 
 func TestRenderRowShowsTitleAndIndent(t *testing.T) {
 	n := &tree.Node{Node: adapter.Node{ID: "n2", Title: "i want to discuss the weather"}, SessionID: "82cb69f2-x"}
-	got := renderRow(Row{Node: n, Depth: 1}, false, "", 80)
+	got, _ := renderRow(Row{Node: n, Depth: 1}, false, "", 80)
 	if !strings.Contains(got, "i want to discuss the weather") {
 		t.Fatalf("title missing: %q", got)
 	}
@@ -26,7 +26,7 @@ func TestRenderRowShowsTitleAndIndent(t *testing.T) {
 
 func TestRenderRowMarksCurrent(t *testing.T) {
 	n := &tree.Node{Node: adapter.Node{ID: "n1", Title: "x"}, SessionID: "sid-a", IsSessionLeaf: true}
-	got := renderRow(Row{Node: n}, false, "sid-a", 80)
+	got, _ := renderRow(Row{Node: n}, false, "sid-a", 80)
 	if !strings.Contains(got, "● current") {
 		t.Fatalf("current marker missing: %q", got)
 	}
@@ -37,7 +37,7 @@ func TestRenderRowShowsSessionIdOnRoots(t *testing.T) {
 		Node: adapter.Node{ID: "n1", Title: "x"},
 		SessionID: "82cb69f2-e18b-4f86-874a-89e93139324a", IsSessionRoot: true,
 	}
-	got := renderRow(Row{Node: n}, false, "", 80)
+	got, _ := renderRow(Row{Node: n}, false, "", 80)
 	if !strings.Contains(got, "82cb69f2") {
 		t.Fatalf("short session id missing: %q", got)
 	}
@@ -48,7 +48,7 @@ func TestRenderRowShowsSessionIdOnRoots(t *testing.T) {
 
 func TestRenderRowMarksBroken(t *testing.T) {
 	n := &tree.Node{SessionID: "sid", IsSessionRoot: true, Broken: true}
-	got := renderRow(Row{Node: n}, false, "", 80)
+	got, _ := renderRow(Row{Node: n}, false, "", 80)
 	if !strings.Contains(got, "⚠") {
 		t.Fatalf("broken marker missing: %q", got)
 	}
@@ -59,7 +59,7 @@ func TestRenderRowMarksGraft(t *testing.T) {
 		Node: adapter.Node{ID: "m1", Title: "alt"},
 		SessionID: "f2af34a4-x", IsSessionRoot: true, Grafted: true,
 	}
-	got := renderRow(Row{Node: n, Depth: 2}, false, "", 80)
+	got, _ := renderRow(Row{Node: n, Depth: 2}, false, "", 80)
 	if !strings.Contains(got, "↳") {
 		t.Fatalf("graft marker missing: %q", got)
 	}
@@ -171,7 +171,8 @@ func TestOnlyTheLastTurnOfTheCurrentSessionIsMarkedCurrent(t *testing.T) {
 
 	var marked []string
 	for _, r := range rows {
-		if strings.Contains(renderRow(r, false, "sid-a", 80), "● current") {
+		text, _ := renderRow(r, false, "sid-a", 80)
+		if strings.Contains(text, "● current") {
 			marked = append(marked, r.Node.Node.ID)
 		}
 	}
