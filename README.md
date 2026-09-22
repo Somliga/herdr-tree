@@ -48,7 +48,9 @@ the picker says which before you commit:
 - **At the tip of the session you are in**, the summary is simply your next
   message and Herdr delivers it to the running agent. Nothing is copied.
 - **Anywhere else**, it starts a new session that rewinds to that turn and
-  carries the summary as its first turn.
+  carries the summary as its next turn. That copies the transcript, so it
+  confirms first with the same turns/entries/bytes figures ⏎ shows before a
+  branch.
 
 The first case needs to know where the live session is running. Herdr accepts
 a pane id wherever it accepts an agent, and `herdr agent list` reports each

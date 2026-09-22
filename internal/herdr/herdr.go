@@ -63,11 +63,46 @@ func agentStartArgv(name, paneID, sessionID string) []string {
 	return []string{"agent", "start", name, "--kind", "claude", "--pane", paneID, "--", "--resume", sessionID}
 }
 
-func openTreePaneArgv(cwd string) []string {
-	return []string{"plugin", "pane", "open",
+// isSessionID reports whether s is plausible as a session id, and therefore
+// safe to interpolate into an environment assignment. A session id is a uuid;
+// a value carrying whitespace, a newline or an "=" is something else, and
+// anything reading the environment back as text would misread it. Rejected
+// values are dropped rather than refused, so the overlay falls back to
+// inferring the session — no worse than before it was told.
+func isSessionID(s string) bool {
+	if s == "" || len(s) > 64 {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func openTreePaneArgv(cwd, sessionID string) []string {
+	argv := []string{"plugin", "pane", "open",
 		"--plugin", "herdr-tree", "--entrypoint", "tree",
 		"--placement", "overlay", "--cwd", cwd}
+	// Tell the overlay which session it was opened for. The pane running this
+	// knows; the overlay's own pane runs no agent, so all it could do is
+	// infer from a shared cwd — and two interactive sessions in one repo make
+	// that inference ambiguous, which reads as "no session at all".
+	//
+	// --env and KEY=VALUE are two argv elements: herdr does not accept the
+	// --flag=value form. The "=" inside the value is fine, it is one element.
+	if isSessionID(sessionID) {
+		argv = append(argv, "--env", SessionEnv+"="+sessionID)
+	}
+	return argv
 }
+
+// SessionEnv names the session the overlay was opened for. Exported so
+// cmd/herdr-tree reads the same key this sets.
+const SessionEnv = "HERDR_TREE_SESSION"
 
 func agentListArgv() []string {
 	return []string{"agent", "list"}
@@ -204,12 +239,13 @@ func AgentStart(name, paneID, sessionID string) error {
 	return err
 }
 
-// OpenTreePane asks Herdr to open this plugin's overlay pane.
-func OpenTreePane(cwd string) error {
+// OpenTreePane asks Herdr to open this plugin's overlay pane, telling it
+// which session the calling pane is running.
+func OpenTreePane(cwd, sessionID string) error {
 	if err := checkArg("cwd", cwd); err != nil {
 		return err
 	}
-	_, err := run(openTreePaneArgv(cwd)...)
+	_, err := run(openTreePaneArgv(cwd, sessionID)...)
 	return err
 }
 

@@ -108,7 +108,7 @@ func TestArgvOrderingAndSeparator(t *testing.T) {
 		t.Fatalf("resume args are not behind the separator: %v", a)
 	}
 
-	got = strings.Join(openTreePaneArgv("/repo"), " ")
+	got = strings.Join(openTreePaneArgv("/repo", ""), " ")
 	want = "plugin pane open --plugin herdr-tree --entrypoint tree --placement overlay --cwd /repo"
 	if got != want {
 		t.Fatalf("openTreePaneArgv:\n got %q\nwant %q", got, want)
@@ -122,7 +122,7 @@ func TestRefusesArgumentsThatWouldBeReadAsFlags(t *testing.T) {
 	if _, err := Split("-rf"); !errors.Is(err, ErrUnsafeArgument) {
 		t.Fatalf("Split: got %v want ErrUnsafeArgument", err)
 	}
-	if err := OpenTreePane("--placement"); !errors.Is(err, ErrUnsafeArgument) {
+	if err := OpenTreePane("--placement", ""); !errors.Is(err, ErrUnsafeArgument) {
 		t.Fatalf("OpenTreePane: got %v want ErrUnsafeArgument", err)
 	}
 	if err := AgentStart("-x", "wA:p1", "sid"); !errors.Is(err, ErrUnsafeArgument) {
@@ -330,5 +330,39 @@ func TestAgentForSessionRefusesAFlagShapedSessionId(t *testing.T) {
 	stubHerdr(t, "echo should-not-run; exit 1")
 	if _, err := AgentForSession("-x"); !errors.Is(err, ErrUnsafeArgument) {
 		t.Fatalf("got %v, want ErrUnsafeArgument", err)
+	}
+}
+
+// The overlay must be TOLD which session it is for. Inferring it from a
+// shared cwd cannot separate two interactive sessions in one repo, and that
+// ambiguity reads as "no session", which empties the trunk as well as the
+// send target.
+func TestOpenTreePaneArgvCarriesTheSession(t *testing.T) {
+	got := openTreePaneArgv("/repo", "6d6dffb3-1677-4215-888a-819585242bac")
+	joined := strings.Join(got, " ")
+	want := "plugin pane open --plugin herdr-tree --entrypoint tree --placement overlay --cwd /repo" +
+		" --env HERDR_TREE_SESSION=6d6dffb3-1677-4215-888a-819585242bac"
+	if joined != want {
+		t.Fatalf("openTreePaneArgv:\n got %q\nwant %q", joined, want)
+	}
+	// herdr rejects --flag=value, so the flag and its value must be two
+	// elements; the "=" inside the value is what makes that easy to get wrong.
+	for i, v := range got {
+		if v == "--env" {
+			if i+1 >= len(got) || got[i+1] != "HERDR_TREE_SESSION=6d6dffb3-1677-4215-888a-819585242bac" {
+				t.Fatalf("--env and its assignment are not two elements: %v", got)
+			}
+		}
+	}
+	if strings.Contains(joined, "--env=") {
+		t.Fatal("herdr does not accept --flag=value")
+	}
+}
+
+func TestOpenTreePaneArgvDropsAnImplausibleSession(t *testing.T) {
+	for _, bad := range []string{"", "not a uuid", "sid\nHOME=/tmp", "a=b", strings.Repeat("a", 65)} {
+		if got := strings.Join(openTreePaneArgv("/repo", bad), " "); strings.Contains(got, "--env") {
+			t.Fatalf("session %q was passed through: %q", bad, got)
+		}
 	}
 }

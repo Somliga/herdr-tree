@@ -630,13 +630,32 @@ func TestPickerFoldsTheChosenSummaryInAtTheSelectedTurn(t *testing.T) {
 	}
 
 	after2, cmd := got.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if cmd == nil {
-		t.Fatal("want foldBackCmd on enter")
+	got2 := after2.(uiModel)
+	if cmd != nil {
+		t.Fatal("the picker must not graft before the cost is shown")
 	}
-	if after2.(uiModel).picking != nil {
+	if got2.picking != nil {
 		t.Fatal("the picker should close once acted on")
 	}
-	if msg := cmd().(actionDoneMsg); !msg.quit {
+	// The same graft ⏎ on a turn confirms, plus a pane open: the same
+	// figures, from the same Preview.
+	for _, want := range []string{"1 turn(s)", "2 entries", "3 B"} {
+		if !strings.Contains(got2.confirm, want) {
+			t.Fatalf("the fold-back confirmation does not say %q:\n%s", want, got2.confirm)
+		}
+	}
+	if fa.seededWith != "" {
+		t.Fatal("nothing may be written before the confirmation is accepted")
+	}
+
+	after3, cmd3 := got2.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd3 == nil {
+		t.Fatal("want foldBackCmd once confirmed")
+	}
+	if after3.(uiModel).confirm != "" {
+		t.Fatal("the confirmation should close once acted on")
+	}
+	if msg := cmd3().(actionDoneMsg); !msg.quit {
 		t.Fatalf("want the fold-back to succeed: %q", msg.status)
 	}
 	if !strings.HasPrefix(fa.seededWith, claudeSummaryPrefix) {
@@ -668,7 +687,14 @@ func TestOnlyTheLiveSessionsTipIsSentTo(t *testing.T) {
 	if strings.Contains(got.View(), "tree-agent") {
 		t.Fatalf("the picker offers to message an agent that is not on this session:\n%s", got.View())
 	}
-	_, cmd := got.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	after2, cmd := got.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd != nil {
+		t.Fatal("the graft path must confirm first")
+	}
+	_, cmd = after2.(uiModel).Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("want foldBackCmd once confirmed")
+	}
 	cmd()
 	if sent != 0 {
 		t.Fatal("a summary was sent to the agent of a different session")
@@ -679,3 +705,175 @@ func TestOnlyTheLiveSessionsTipIsSentTo(t *testing.T) {
 }
 
 func key(r rune) tea.KeyMsg { return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}} }
+
+// A summary IS message content. It may appear on the screen the user asked
+// for it on, and nowhere else: not in a status line, not in an error, and not
+// in a title that goes to disk and comes back as a row.
+const sentinel = "PRIVATE-CONVERSATION-CONTENT"
+
+func summaryWithSentinel() store.Summary {
+	return store.Summary{
+		Text:      "attempted: the token service\n\nrejected: redis, because " + sentinel + " and more besides",
+		SessionID: "other", FromTurn: "a", ToTurn: "b",
+	}
+}
+
+func TestNoStatusLineCarriesTheSummary(t *testing.T) {
+	sum := summaryWithSentinel()
+	roots := session("s", "t1", "t2")
+	rows := New(roots).Rows()
+	early, tip := rows[0].Node, rows[len(rows)-1].Node
+
+	var statuses []string
+	collect := func(m tea.Msg) { statuses = append(statuses, m.(actionDoneMsg).status) }
+
+	// summarising, succeeding
+	st := loadedStore(t)
+	collect(summariseCmd(&fakeAdapter{summary: sum.Text}, st, early, tip)())
+	// folding back as a graft, succeeding
+	collect(foldBackCmd(&fakeAdapter{}, loadedStore(t), early, "/repo", sum, "", nil)())
+	// folding back as a message, succeeding
+	collect(foldBackCmd(&fakeAdapter{}, loadedStore(t), tip, "/repo", sum, "wA:p1",
+		func(string, string) error { return nil })())
+	// and failing with an error that quotes the message back at us, which is
+	// exactly what herdr does with an argument it would not accept
+	quoting := func(_, text string) error { return errors.New("herdr agent prompt: rejected " + text) }
+	collect(foldBackCmd(&fakeAdapter{}, loadedStore(t), tip, "/repo", sum, "wA:p1", quoting)())
+	// and the graft path failing the same way
+	echoing := &fakeAdapter{seedErr: errors.New("graft refused: " + sum.Text)}
+	collect(foldBackCmd(echoing, loadedStore(t), early, "/repo", sum, "", nil)())
+
+	if len(statuses) != 5 {
+		t.Fatalf("setup: collected %d statuses", len(statuses))
+	}
+	for i, got := range statuses {
+		if strings.Contains(got, sentinel) {
+			t.Fatalf("status %d leaked the summary: %q", i, got)
+		}
+	}
+	// the failures must still say something happened
+	for _, i := range []int{3, 4} {
+		if statuses[i] == "" {
+			t.Fatalf("status %d says nothing about a failure", i)
+		}
+	}
+}
+
+func TestAStoredTitleIsABoundedSingleLine(t *testing.T) {
+	st := loadedStore(t)
+	at := New(session("s", "t1", "t2")).Rows()[0].Node
+	foldBackCmd(&fakeAdapter{}, st, at, "/repo", summaryWithSentinel(), "", nil)()
+
+	b, ok := st.Branches["new-sid"]
+	if !ok {
+		t.Fatalf("no edge recorded: %+v", st.Branches)
+	}
+	if strings.Contains(b.Title, sentinel) {
+		t.Fatalf("the stored title carries the summary's body: %q", b.Title)
+	}
+	if strings.ContainsAny(b.Title, "\n\r") {
+		t.Fatalf("a row title must be one line: %q", b.Title)
+	}
+	if n := len([]rune(b.Title)); n > 44 {
+		t.Fatalf("a row title must be bounded: %d runes", n)
+	}
+}
+
+// A range is selected by row, and with scope set to all sessions the rows of
+// two sessions sit next to each other. Summarise grafts ONE transcript and
+// names the start turn in it, so a start in another session is not in that
+// file at all.
+func TestARangeMayNotSpanTwoSessions(t *testing.T) {
+	roots := tree.Build([]adapter.Session{
+		{ID: "s1", Nodes: []adapter.Node{{ID: "t1", Title: "one"}, {ID: "t2", Title: "two"}}},
+		{ID: "s2", Nodes: []adapter.Node{{ID: "u1", Title: "other one"}}},
+	}, &store.Store{Version: 1, Branches: map[string]store.Branch{}})
+
+	fa := &fakeAdapter{summary: "x"}
+	u := uiModel{m: New(roots), a: fa, st: loadedStore(t), roots: roots, scopeAll: true}
+	rows := u.m.Rows()
+	if len(rows) != 3 || rows[0].Node.SessionID == rows[2].Node.SessionID {
+		t.Fatalf("setup: want rows from two sessions, got %d", len(rows))
+	}
+	u.m.Cursor = 2 // the other session's turn
+	u.m.BeginRange()
+	u.m.Cursor = 0
+
+	after, cmd := u.Update(key('s'))
+	got := after.(uiModel)
+	if cmd != nil || got.confirm != "" {
+		t.Fatal("a range across two sessions must not be summarised")
+	}
+	if fa.summarisedTo != "" {
+		t.Fatal("the adapter was asked to summarise across two transcripts")
+	}
+	if !strings.Contains(got.status, "one session") {
+		t.Fatalf("the refusal does not say why: %q", got.status)
+	}
+	if got.m.RangeEnd == nil {
+		t.Fatal("the range should survive so it can be adjusted")
+	}
+}
+
+func TestPOnABrokenRowDoesNothing(t *testing.T) {
+	st := loadedStore(t)
+	st.AddSummary(store.Summary{Text: "x", SessionID: "other", FromTurn: "a", ToTurn: "b"})
+	// tree.Build's own shape for a session whose transcript will not parse:
+	// one node, no turn id, Broken.
+	roots := tree.Build([]adapter.Session{{ID: "s", Broken: true}}, st)
+	u := uiModel{m: New(roots), a: &fakeAdapter{}, st: st}
+
+	after, cmd := u.Update(key('p'))
+	got := after.(uiModel)
+	if cmd != nil || got.picking != nil {
+		t.Fatal("a broken row has no turn to fold a summary into")
+	}
+}
+
+// The picker's sentence is a promise about what enter will do. A mid-session
+// turn of the live session is still a graft — the message path only exists at
+// the tip — and saying otherwise is how a summary ends up somewhere the user
+// did not put it.
+func TestThePickerOnlyPromisesToSendAtTheTip(t *testing.T) {
+	st := loadedStore(t)
+	st.AddSummary(store.Summary{Text: "folded", SessionID: "other", FromTurn: "a", ToTurn: "b"})
+	sent := 0
+	u := uiModel{
+		m: New(session("s", "t1", "t2")), a: &fakeAdapter{}, st: st, repoRoot: "/repo",
+		current: "s", liveAgent: "wA:p1",
+		send: func(string, string) error { sent++; return nil },
+	}
+	u.m.Cursor = 0 // the live session, but not its tip
+
+	after, _ := u.Update(key('p'))
+	got := after.(uiModel)
+	if strings.Contains(got.View(), "wA:p1") {
+		t.Fatalf("the picker promises to send at a mid-session turn:\n%s", got.View())
+	}
+
+	after2, _ := got.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	_, cmd := after2.(uiModel).Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("want foldBackCmd once confirmed")
+	}
+	cmd()
+	if sent != 0 {
+		t.Fatal("a mid-session turn was sent to the live agent")
+	}
+
+	// and at the tip it does promise, and does send
+	u.m.Cursor = len(u.m.Rows()) - 1
+	after3, _ := u.Update(key('p'))
+	got3 := after3.(uiModel)
+	if !strings.Contains(got3.View(), "wA:p1") {
+		t.Fatalf("the picker does not say it will send at the live tip:\n%s", got3.View())
+	}
+	_, cmd3 := got3.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd3 == nil {
+		t.Fatal("the send path acts on enter: there is no cost to confirm")
+	}
+	cmd3()
+	if sent != 1 {
+		t.Fatalf("the live tip did not send: %d", sent)
+	}
+}

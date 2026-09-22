@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 
+	"herdr-tree/internal/adapter"
 	"herdr-tree/internal/claude"
 	"herdr-tree/internal/herdr"
 	"herdr-tree/internal/repo"
@@ -52,7 +53,34 @@ func open() error {
 	if err != nil {
 		return err
 	}
-	return herdr.OpenTreePane(root)
+	// The overlay cannot work out which session it is for — its own pane runs
+	// no agent — so tell it. This pane knows, for the same reason the adapter
+	// check above belongs here.
+	return herdr.OpenTreePane(root, p.AgentSessionID)
+}
+
+// currentSession is the session the overlay is for.
+//
+// What open() put in the environment wins, because the pane that opened the
+// overlay KNOWS the answer: it is running the agent, and herdr reports that
+// pane's session id directly. The fallback infers it instead, by matching
+// Claude's own registry against a shared cwd — and two interactive sessions
+// in one repo make that ambiguous, which Current correctly reports as no
+// session at all. That would empty the trunk as well as the send target, and
+// silently: the tree would just look like v1's.
+//
+// The fallback stays because the overlay can also be launched by hand, with
+// no opener to have set anything.
+func currentSession(a adapter.Adapter) string {
+	if sid := os.Getenv(herdr.SessionEnv); sid != "" {
+		return sid
+	}
+	if p, err := herdr.PaneCurrent(); err == nil {
+		if sid, err := a.Current(p); err == nil {
+			return sid
+		}
+	}
+	return ""
 }
 
 // pane runs inside the overlay Herdr opened.
@@ -76,12 +104,7 @@ func pane() error {
 		return err
 	}
 
-	current := ""
-	if p, err := herdr.PaneCurrent(); err == nil {
-		if sid, err := a.Current(p); err == nil {
-			current = sid
-		}
-	}
+	current := currentSession(a)
 	if !isGit {
 		fmt.Fprintf(os.Stderr, "herdr-tree: %s is not a git repository; showing only this directory\n", root)
 	}

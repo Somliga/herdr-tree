@@ -154,6 +154,14 @@ func confirmText(n *tree.Node, turns, entries int, size int64, dstCWD string) st
 		n.Node.Title, turns, entries, humanBytes(size), dstCWD)
 }
 
+// foldBackConfirmText is confirmText's sibling for a fold-back: the same
+// graft, plus one injected turn, so the same figures.
+func foldBackConfirmText(at *tree.Node, turns, entries int, size int64, dstCWD string) string {
+	return fmt.Sprintf(
+		"Fold the summary in at:  %q\n\nThis starts a NEW session carrying %d turn(s) · %d entries · %s, with the summary appended as its next turn.\nThe original is untouched.\n\nOpens: split right, unfocused in %s\n\n[enter] fold back   [esc] cancel",
+		at.Node.Title, turns, entries, humanBytes(size), dstCWD)
+}
+
 type uiModel struct {
 	m        *Model
 	a        adapter.Adapter
@@ -340,6 +348,26 @@ func foldBackSeed(at *tree.Node, sum store.Summary) string {
 	return claudeSummaryPrefix + " " + shortID(sum.SessionID) + "\n\n" + sum.Text
 }
 
+// scrubbed renders an error for the status line with the seed taken out of
+// it.
+//
+// The status is the one line of this program that message content may never
+// reach, and the cause comes from outside: herdr reports its own stderr, and
+// herdr may quote back the prompt it rejected. Trusting it not to is the kind
+// of assumption that holds until the day it does not, so every line of the
+// seed is removed from the cause instead.
+func scrubbed(err error, seed string) string {
+	cause := err.Error()
+	for _, line := range strings.Split(seed, "\n") {
+		// Short lines are dropped: a blank line or a bare "⤶ compacted t1..t2"
+		// matches too much of ordinary prose to be worth cutting.
+		if line = strings.TrimSpace(line); len(line) >= 12 {
+			cause = strings.ReplaceAll(cause, line, "…")
+		}
+	}
+	return cause
+}
+
 // foldBackCmd appends a summary at a chosen turn.
 //
 // At the live session's tip the summary is simply the next message, and Herdr
@@ -354,14 +382,14 @@ func foldBackCmd(a adapter.Adapter, st *store.Store, at *tree.Node, dst string, 
 		seed := foldBackSeed(at, sum)
 		if at.IsSessionLeaf && liveAgent != "" && send != nil {
 			if err := send(liveAgent, seed); err != nil {
-				return actionDoneMsg{status: "not sent to " + liveAgent + ": " + err.Error() + " — nothing was written"}
+				return actionDoneMsg{status: "not sent to " + liveAgent + ": " + scrubbed(err, seed) + " — nothing was written"}
 			}
 			return actionDoneMsg{status: "sent to " + liveAgent, quit: true}
 		}
 		src := adapter.Session{ID: at.SessionID, CWD: at.SessionCWD, Path: at.SessionPath}
 		sid, err := a.BranchSeeded(src, at.Node.ID, dst, seed)
 		if err != nil {
-			return actionDoneMsg{status: "fold back failed: " + err.Error()}
+			return actionDoneMsg{status: "fold back failed: " + scrubbed(err, seed)}
 		}
 		// Record the edge before resuming: the transcript now exists, so the
 		// branch must survive even if opening it fails.
@@ -486,8 +514,26 @@ func (u uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "enter":
 				sum, at := u.picking[u.pickIdx], u.pickAt
 				u.picking, u.pickAt, u.pickIdx = nil, nil, 0
-				u.busy = "folding back…"
-				return u, foldBackCmd(u.a, u.st, at, u.dstCWD(at), sum, u.agentFor(at), u.send)
+				agent := u.agentFor(at)
+				if agent != "" && at.IsSessionLeaf && u.send != nil {
+					// Nothing is copied and nothing is written: the summary
+					// is the next message. There is no cost to show.
+					u.busy = "sending…"
+					return u, foldBackCmd(u.a, u.st, at, u.dstCWD(at), sum, agent, u.send)
+				}
+				// The other path is the same graft ⏎ on a turn confirms,
+				// plus a pane open, and on a long transcript it is the more
+				// expensive of the two. It gets the same figures first.
+				src := adapter.Session{ID: at.SessionID, CWD: at.SessionCWD, Path: at.SessionPath}
+				turns, entries, size, err := u.a.Preview(src, at.Node.ID)
+				if err != nil {
+					u.status = "cannot fold back here: " + err.Error()
+					return u, nil
+				}
+				u.confirm = foldBackConfirmText(at, turns, entries, size, u.dstCWD(at))
+				u.pending = foldBackCmd(u.a, u.st, at, u.dstCWD(at), sum, agent, u.send)
+				u.pendingBusy = "folding back…"
+				return u, nil
 			case "esc", "q":
 				u.picking, u.pickAt, u.pickIdx = nil, nil, 0
 			}
