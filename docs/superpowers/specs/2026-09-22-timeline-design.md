@@ -173,6 +173,54 @@ and it is the thing that makes a rewound timeline readable a week later. It
 must survive the containing branch being folded onward — the marker belongs to
 the entry, not to a store record that a later rewind might not carry.
 
+## 6b. Colour
+
+Colour carries two things: which kind of row this is, and — for a summary —
+what it did to the timeline.
+
+| row | colour | glyph |
+|---|---|---|
+| your prompts | foreground, bright | — |
+| assistant replies | dimmed | — |
+| tool calls | dimmest | `[name: arg]` |
+| summary, **import** | orange | `⤶` |
+| summary, **compaction** | blue | `⤶` |
+| unreadable session | red | `⚠` |
+| current session's tip | green | `●` |
+
+**The summary colours encode effect, not origin.** Blue means these turns were
+on this line and got replaced by something shorter: the line contracted,
+nothing new arrived. Orange means knowledge came in from a line that was
+abandoned: something is here that was not before.
+
+Origin — "from the trunk" versus "from a branch" — is the obvious encoding and
+the wrong one, because it stops being crisp the moment fold-backs cascade. A
+summary folded in from a branch that itself absorbed another branch's summary
+is still, unambiguously, an import. "Did new knowledge arrive here?" survives
+nesting; "where was it before?" does not.
+
+Blue and orange are also the colour-vision-safe axis. The common deficiencies
+affect red and green; blue against orange stays distinguishable.
+
+### Colour reinforces, it never carries alone
+
+Every distinction above is also a glyph or a prefix. Colour is lost on copy and
+paste, in a log, in a screenshot someone re-encodes, and against a terminal
+theme that fights it — and this plugin runs inside Herdr, which has themes and
+a light/dark auto-switch. A user who cannot see the colour must lose nothing.
+
+Colours are therefore `lipgloss.AdaptiveColor`, resolved per light or dark
+background rather than fixed ANSI, and the palette is one table in one place so
+it can be made configurable without touching the renderer.
+
+### `renderRow` stays plain text
+
+`renderRow` returns an uncoloured string and a style key; `View` applies the
+style. This is not fastidiousness: the row content is asserted by a large
+number of tests, several of which caught real defects during v1 precisely
+because they could compare exact output. Styling inside `renderRow` would make
+every one of those assertions fight escape sequences.
+
 ## 7. What this does not do
 
 - **No merging of conversations.** Two transcripts are never interleaved. The
