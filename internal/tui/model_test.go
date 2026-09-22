@@ -483,3 +483,58 @@ func TestGraftedChildIndentsOneLevelInAScopedView(t *testing.T) {
 	}
 }
 
+
+func TestTrunkRendersAtDepthZeroEvenWhenGrafted(t *testing.T) {
+	// root ── (branch point) ── grafted, and the user is in the grafted one
+	root := &tree.Node{Node: adapter.Node{ID: "r1"}, SessionID: "root", IsSessionRoot: true, IsHead: true}
+	r2 := &tree.Node{Node: adapter.Node{ID: "r2"}, SessionID: "root", IsHead: true}
+	g1 := &tree.Node{Node: adapter.Node{ID: "g1"}, SessionID: "graft", IsSessionRoot: true, IsHead: true, Grafted: true}
+	g2 := &tree.Node{Node: adapter.Node{ID: "g2"}, SessionID: "graft", IsHead: true}
+	root.Children = append(root.Children, r2)
+	r2.Children = append(r2.Children, g1)
+	g1.Children = append(g1.Children, g2)
+
+	m := New([]*tree.Node{root})
+	m.SetTrunk(map[string]bool{"graft": true, "root": true})
+	for _, r := range m.Rows() {
+		if r.Node.SessionID == "graft" && r.Depth != 0 {
+			t.Fatalf("the trunk must render at depth 0; %s is at %d", r.Node.Node.ID, r.Depth)
+		}
+	}
+}
+
+func TestOffTrunkBranchIsIndentedAtItsDivergence(t *testing.T) {
+	root := &tree.Node{Node: adapter.Node{ID: "r1"}, SessionID: "root", IsSessionRoot: true, IsHead: true}
+	side := &tree.Node{Node: adapter.Node{ID: "s1"}, SessionID: "side", IsSessionRoot: true, IsHead: true, Grafted: true}
+	root.Children = append(root.Children, side)
+
+	m := New([]*tree.Node{root})
+	m.SetTrunk(map[string]bool{"root": true})
+	var sideDepth = -1
+	for _, r := range m.Rows() {
+		if r.Node.SessionID == "side" {
+			sideDepth = r.Depth
+		}
+		if r.Node.SessionID == "root" && !r.OnTrunk {
+			t.Fatal("root is on the trunk and the row should say so")
+		}
+	}
+	if sideDepth != 1 {
+		t.Fatalf("an off-trunk branch indents once; got %d", sideDepth)
+	}
+}
+
+func TestNoTrunkFallsBackToV1(t *testing.T) {
+	root := &tree.Node{Node: adapter.Node{ID: "r1"}, SessionID: "root", IsSessionRoot: true, IsHead: true}
+	g := &tree.Node{Node: adapter.Node{ID: "g1"}, SessionID: "graft", IsSessionRoot: true, IsHead: true, Grafted: true}
+	root.Children = append(root.Children, g)
+	m := New([]*tree.Node{root})
+	m.SetTrunk(nil) // no live session
+	depths := map[string]int{}
+	for _, r := range m.Rows() {
+		depths[r.Node.SessionID] = r.Depth
+	}
+	if depths["graft"] != 1 {
+		t.Fatalf("with no trunk the v1 shape stands; graft at %d want 1", depths["graft"])
+	}
+}

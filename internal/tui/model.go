@@ -15,6 +15,9 @@ type Row struct {
 	// BodyCount is how many of this node's descendants belong to its own
 	// section body — what a folded row is hiding.
 	BodyCount int
+	// OnTrunk is whether this row's session is on the current lineage. See
+	// Model.SetTrunk.
+	OnTrunk bool
 }
 
 // bodyCount counts a node's descendants that are its own section body: same
@@ -53,12 +56,22 @@ func (f Filter) String() string {
 }
 
 type Model struct {
-	Roots  []*tree.Node
-	Cursor int
-	Folded map[*tree.Node]bool
-	Filter Filter
+	Roots   []*tree.Node
+	Cursor  int
+	Folded  map[*tree.Node]bool
+	Filter  Filter
+	OnTrunk map[string]bool
 
 	parent map[*tree.Node]*tree.Node
+}
+
+// SetTrunk records which sessions are on the current lineage. An empty or nil
+// set means there is no live session, and the tree falls back to v1's shape
+// rather than guessing which line matters.
+func (m *Model) SetTrunk(sessions map[string]bool) { m.OnTrunk = sessions }
+
+func (m *Model) onTrunk(n *tree.Node) bool {
+	return len(m.OnTrunk) > 0 && m.OnTrunk[n.SessionID]
 }
 
 func (m *Model) CycleFilter() {
@@ -213,14 +226,25 @@ func (m *Model) Rows() []Row {
 				HasChildren: len(n.Children) > 0,
 				Folded:      folded,
 				BodyCount:   bodyCount(n),
+				OnTrunk:     m.onTrunk(n),
 			})
 		}
 		if folded {
 			// Folding a section hides its body, but the chain of section
 			// heads must keep going — otherwise a folded prompt would take
-			// every later prompt in the session down with it.
+			// every later prompt in the session down with it. A grafted child
+			// is a different branch entirely, not part of this node's body, so
+			// a fold never hides it either; it gets the same graft-indent
+			// treatment as the unfolded case below.
 			for _, c := range n.Children {
-				if c.IsHead && c.SessionID == n.SessionID {
+				switch {
+				case c.SessionID != n.SessionID:
+					next := depth
+					if !m.onTrunk(c) {
+						next = depth + 1
+					}
+					walk(c, next)
+				case c.IsHead:
 					walk(c, depth)
 				}
 			}
@@ -245,7 +269,12 @@ func (m *Model) Rows() []Row {
 			next := depth
 			switch {
 			case c.SessionID != n.SessionID:
-				next = depth + 1 // a graft: a real branch in the tree
+				// A graft indents — unless the child is on the trunk, in
+				// which case it IS the main line and the parent's tail is
+				// the branch.
+				if !m.onTrunk(c) {
+					next = depth + 1
+				}
 			case n.IsHead && !c.IsHead:
 				next = depth + 1 // this section's body
 			}

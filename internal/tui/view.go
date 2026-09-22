@@ -122,6 +122,7 @@ func (u *uiModel) rebuild() {
 		}
 	}
 	u.m = New(roots)
+	u.m.SetTrunk(tree.Trunk(u.roots, u.current))
 	if was == nil {
 		return
 	}
