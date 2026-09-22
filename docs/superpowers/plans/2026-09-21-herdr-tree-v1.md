@@ -951,7 +951,7 @@ func TestSlugFor(t *testing.T) {
 		{"/home/a/projects/x", "-home-a-projects-x"},
 		{"/home/a/doc writing", "-home-a-doc-writing"},
 		{"/home/a/slug_test.dir v2+x", "-home-a-slug-test-dir-v2-x"},
-		{"/home/a/Solör Bioenergi", "-home-a-Sol-r-Bioenergi"},
+		{"/home/a/Café Ström", "-home-a-Caf--Str-m"},
 		{"/home/a/keeps-dashes", "-home-a-keeps-dashes"},
 	}
 	for _, c := range cases {
@@ -1199,8 +1199,8 @@ func ProjectsDir() string {
 // Verified empirically against Claude Code 2.1.278 by running it in a
 // directory named `slug_test.dir v2+x`, which produced `slug-test-dir-v2-x`:
 // "/", "_", ".", " " and "+" all collapse to "-". It is per RUNE, not per
-// byte — a real transcript here shows `Solör Bioenergi` becoming
-// `Sol-r-Bioenergi`, one dash for a two-byte character.
+// byte — a real transcript here shows a non-ASCII directory name becoming
+// one dash per rune, not per byte.
 //
 // Getting this wrong is not cosmetic: a graft written into the wrong
 // directory is a session Claude Code will never find, so the branch silently
