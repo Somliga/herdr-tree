@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -28,6 +29,17 @@ type Branch struct {
 	Artifacts   []string  `json:"artifacts"` // always [], populated in v1.1
 }
 
+// Summary is an LLM summary of a RANGE of turns. It belongs to a span, not a
+// session: the same session can be summarised over different spans, and
+// folding one back has to name which.
+type Summary struct {
+	Text      string    `json:"text"`
+	SessionID string    `json:"session_id"`
+	FromTurn  string    `json:"from_turn"`
+	ToTurn    string    `json:"to_turn"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 type Store struct {
 	Version  int               `json:"version"`
 	RepoRoot string            `json:"repo_root"`
@@ -36,7 +48,8 @@ type Store struct {
 	// Landmarking a turn is deliberately separate from branching from it: in
 	// practice you notice a point matters before you know whether you will go
 	// back to it, and a label costs nothing while a branch costs a session.
-	Labels map[string]string `json:"labels,omitempty"`
+	Labels    map[string]string `json:"labels,omitempty"`
+	Summaries map[string]Summary `json:"summaries,omitempty"`
 
 	path          string
 	deletedLabels map[string]bool // keys cleared via SetLabel since Load, so Save's merge does not resurrect them
@@ -121,6 +134,31 @@ func (s *Store) SetLabel(sessionID, turnID, text string) {
 	s.Labels[k] = text
 }
 
+// SummaryKey identifies a span.
+func SummaryKey(sessionID, fromTurn, toTurn string) string {
+	return sessionID + ":" + fromTurn + ".." + toTurn
+}
+
+// AddSummary records or replaces the summary for a span.
+func (s *Store) AddSummary(sum Summary) {
+	if s.Summaries == nil {
+		s.Summaries = map[string]Summary{}
+	}
+	s.Summaries[SummaryKey(sum.SessionID, sum.FromTurn, sum.ToTurn)] = sum
+}
+
+// SummariesFor returns every summary recorded against a session, oldest first.
+func (s *Store) SummariesFor(sessionID string) []Summary {
+	var out []Summary
+	for _, v := range s.Summaries {
+		if v.SessionID == sessionID {
+			out = append(out, v)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
+	return out
+}
+
 // Add records a graft edge, keyed by the new session's id.
 func (s *Store) Add(sessionID string, b Branch) {
 	if b.Artifacts == nil {
@@ -163,6 +201,14 @@ func (s *Store) Save() error {
 			}
 			if _, ours := s.Labels[k]; !ours {
 				s.Labels[k] = v
+			}
+		}
+		for k, v := range onDisk.Summaries {
+			if s.Summaries == nil {
+				s.Summaries = map[string]Summary{}
+			}
+			if _, ours := s.Summaries[k]; !ours {
+				s.Summaries[k] = v
 			}
 		}
 	}

@@ -214,3 +214,57 @@ func TestConcurrentSavesKeepBothLabels(t *testing.T) {
 		t.Fatal("pane B's label is missing")
 	}
 }
+
+func TestSummaryRoundTripAndLookup(t *testing.T) {
+	t.Setenv("HERDR_PLUGIN_CONFIG_DIR", t.TempDir())
+	s, _ := Load("/repo")
+	s.AddSummary(Summary{
+		Text:      "Tried redis; rejected, too much operational weight.",
+		SessionID: "sess-a", FromTurn: "t3", ToTurn: "t9",
+		CreatedAt: time.Date(2026, 9, 22, 10, 0, 0, 0, time.UTC),
+	})
+	s.AddSummary(Summary{
+		Text:      "Second look at the token service.",
+		SessionID: "sess-a", FromTurn: "t11", ToTurn: "t14",
+	})
+	s.AddSummary(Summary{Text: "elsewhere", SessionID: "sess-b", FromTurn: "x", ToTurn: "y"})
+	if err := s.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	again, err := Load("/repo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := again.SummariesFor("sess-a")
+	if len(got) != 2 {
+		t.Fatalf("got %d summaries for sess-a, want 2", len(got))
+	}
+	if got[0].Text == "" || got[0].FromTurn == "" {
+		t.Fatalf("summary lost fields in the round trip: %+v", got[0])
+	}
+	if len(again.SummariesFor("sess-b")) != 1 {
+		t.Fatal("summaries leaked between sessions")
+	}
+	if len(again.SummariesFor("nobody")) != 0 {
+		t.Fatal("unknown session returned summaries")
+	}
+}
+
+func TestConcurrentSavesKeepBothSummaries(t *testing.T) {
+	t.Setenv("HERDR_PLUGIN_CONFIG_DIR", t.TempDir())
+	a, _ := Load("/repo")
+	b, _ := Load("/repo")
+	a.AddSummary(Summary{Text: "from pane A", SessionID: "s", FromTurn: "t1", ToTurn: "t2"})
+	b.AddSummary(Summary{Text: "from pane B", SessionID: "s", FromTurn: "t5", ToTurn: "t6"})
+	if err := a.Save(); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Save(); err != nil {
+		t.Fatal(err)
+	}
+	final, _ := Load("/repo")
+	if len(final.SummariesFor("s")) != 2 {
+		t.Fatalf("a summary was discarded by the other pane's save: %+v", final.Summaries)
+	}
+}
