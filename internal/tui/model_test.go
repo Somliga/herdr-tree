@@ -127,53 +127,6 @@ func TestEmptyForestHasNoSelection(t *testing.T) {
 	}
 }
 
-func TestCycleDensityReturnsToStartAndKeepsRootVisible(t *testing.T) {
-	root := chain("n1", "n2", "n3")
-	m := New([]*tree.Node{root})
-	if m.Density != DensityAll {
-		t.Fatalf("Density = %v want DensityAll", m.Density)
-	}
-	for i := 0; i < 3; i++ {
-		m.CycleDensity()
-		var sawRoot bool
-		for _, r := range m.Rows() {
-			if r.Node == root {
-				sawRoot = true
-			}
-		}
-		if !sawRoot {
-			t.Fatalf("session root hidden at density %v", m.Density)
-		}
-	}
-	if m.Density != DensityAll {
-		t.Fatalf("after three cycles Density = %v want DensityAll", m.Density)
-	}
-}
-
-func TestLabelledDensityShowsABuriedLabelledTurn(t *testing.T) {
-	root := chain("n1", "n2", "n3")
-	buried := root.Children[0].Children[0] // n3, under unlabelled n2
-	buried.Label = "landmark"
-
-	m := New([]*tree.Node{root})
-	m.Density = DensityLabelled
-	got := ids(m.Rows())
-	var sawBuried bool
-	for _, id := range got {
-		if id == "n3" {
-			sawBuried = true
-		}
-	}
-	if !sawBuried {
-		t.Fatalf("labelled turn buried under unlabelled parents did not render: %v", got)
-	}
-	for _, id := range got {
-		if id == "n2" {
-			t.Fatalf("unlabelled, non-root turn should not render at DensityLabelled: %v", got)
-		}
-	}
-}
-
 // graftChain builds a chain like chain() but under its own session id, and
 // attaches it as a child of parent — the one thing that is supposed to earn
 // an indent.
@@ -282,14 +235,59 @@ func TestMaxDepthTracksGraftNestingNotTurnCount(t *testing.T) {
 	}
 }
 
-func TestCycleDensityKeepsCursorOnAStillVisibleNode(t *testing.T) {
-	root := chain("n1", "n2", "n3") // root is always visible at every density
-	m := New([]*tree.Node{root})
-	if m.Cursor != 0 || m.Selected() != root {
-		t.Fatalf("setup: cursor should start on the root")
+func TestScopeToReturnsOnlyTheNamedSessionPlusItsGraftedChildren(t *testing.T) {
+	s1 := chain("n1", "n2")
+	graftChain("s2", s1.Children[0], "m1", "m2") // grafted from n2, session s2
+	s3 := &tree.Node{                            // unrelated third session
+		Node: adapter.Node{ID: "o1", Title: "turn o1"}, SessionID: "s3", IsSessionRoot: true,
 	}
-	m.CycleDensity()
-	if m.Selected() != root {
-		t.Fatalf("cursor moved off a node that remained visible: now on %+v", m.Selected())
+
+	scoped := ScopeTo([]*tree.Node{s1, s3}, "s1")
+	if len(scoped) != 1 || scoped[0] != s1 {
+		t.Fatalf("ScopeTo should return exactly s1's root, got %+v", scoped)
+	}
+	m := New(scoped)
+	got := ids(m.Rows())
+	want := map[string]bool{"n1": true, "n2": true, "m1": true, "m2": true}
+	if len(got) != len(want) {
+		t.Fatalf("got %v want the s1 chain plus the session grafted from it", got)
+	}
+	for _, id := range got {
+		if !want[id] {
+			t.Fatalf("unexpected node %q in scoped view (s3 must not leak in): %v", id, got)
+		}
 	}
 }
+
+func TestScopeToUnknownSessionReturnsNil(t *testing.T) {
+	s1 := chain("n1", "n2")
+	if got := ScopeTo([]*tree.Node{s1}, "does-not-exist"); got != nil {
+		t.Fatalf("want nil for an unknown session so the caller can fall back to the full forest, got %+v", got)
+	}
+}
+
+func TestScopeToEmptySessionIDReturnsNil(t *testing.T) {
+	s1 := chain("n1")
+	if got := ScopeTo([]*tree.Node{s1}, ""); got != nil {
+		t.Fatalf("want nil for an empty session id, got %+v", got)
+	}
+}
+
+func TestGraftedChildIndentsOneLevelInAScopedView(t *testing.T) {
+	s1 := chain("n1", "n2")
+	graftChain("s2", s1.Children[0], "m1")
+
+	scoped := ScopeTo([]*tree.Node{s1}, "s1")
+	m := New(scoped)
+	byID := map[string]Row{}
+	for _, r := range m.Rows() {
+		byID[r.Node.Node.ID] = r
+	}
+	if byID["n1"].Depth != 0 || byID["n2"].Depth != 0 {
+		t.Fatalf("s1's own turns should stay at depth 0 in the scoped view: n1=%d n2=%d", byID["n1"].Depth, byID["n2"].Depth)
+	}
+	if byID["m1"].Depth != 1 {
+		t.Fatalf("grafted child depth %d want 1", byID["m1"].Depth)
+	}
+}
+

@@ -177,6 +177,35 @@ func TestOnlyTheLastTurnOfTheCurrentSessionIsMarkedCurrent(t *testing.T) {
 	}
 }
 
+func TestScopeToggleKeepsCursorOnTheSameNode(t *testing.T) {
+	s1 := chain("n1", "n2")
+	s2 := &tree.Node{Node: adapter.Node{ID: "o1", Title: "turn o1"}, SessionID: "s2", IsSessionRoot: true}
+	roots := []*tree.Node{s1, s2}
+	u := uiModel{m: New(roots), current: "s1", roots: roots}
+	u.rebuild() // starts scoped to s1
+	if u.m.Selected() != s1 {
+		t.Fatalf("setup: want cursor on s1's root, got %+v", u.m.Selected())
+	}
+
+	after, _ := u.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	got := after.(uiModel)
+	if !got.scopeAll {
+		t.Fatal("want scopeAll true after toggling to all sessions")
+	}
+	if got.m.Selected() != s1 {
+		t.Fatalf("toggling scope moved the cursor off a node that is still visible: %+v", got.m.Selected())
+	}
+
+	after2, _ := got.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	got2 := after2.(uiModel)
+	if got2.scopeAll {
+		t.Fatal("want scopeAll false after toggling back")
+	}
+	if got2.m.Selected() != s1 {
+		t.Fatalf("toggling scope back moved the cursor: %+v", got2.m.Selected())
+	}
+}
+
 func TestConfirmTextNamesWhatIsCarried(t *testing.T) {
 	n := &tree.Node{Node: adapter.Node{ID: "u3", Title: "what do you think"}}
 	got := confirmText(n, 3, 12, 41984, "/home/somliga/projects/surtr")

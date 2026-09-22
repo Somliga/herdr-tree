@@ -92,6 +92,31 @@ type uiModel struct {
 
 	labelling *tree.Node // non-nil while typing a label
 	labelText string
+
+	roots    []*tree.Node // the whole forest
+	scopeAll bool         // false: just the current session's tree
+}
+
+// rebuild reapplies the scope, keeping the selected node where it still
+// exists so toggling scope does not lose your place.
+func (u *uiModel) rebuild() {
+	was := u.m.Selected()
+	roots := u.roots
+	if !u.scopeAll {
+		if scoped := ScopeTo(u.roots, u.current); scoped != nil {
+			roots = scoped
+		}
+	}
+	u.m = New(roots)
+	if was == nil {
+		return
+	}
+	for i, r := range u.m.Rows() {
+		if r.Node == was {
+			u.m.Cursor = i
+			return
+		}
+	}
 }
 
 // actionDoneMsg carries the result of an adapter call back onto the update
@@ -238,8 +263,9 @@ func (u uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			u.busy = "opening session…"
 			return u, resumeCmd(u.a, n, u.dstCWD(n))
-		case "d":
-			u.m.CycleDensity()
+		case "a":
+			u.scopeAll = !u.scopeAll
+			u.rebuild()
 		case "L":
 			n := u.m.Selected()
 			if n == nil || n.Node.ID == "" {
@@ -285,7 +311,11 @@ func (u uiModel) View() string {
 		}
 		b.WriteString(marker + renderRow(r, i == u.m.Cursor, u.current, u.width-2) + "\n")
 	}
-	b.WriteString(fmt.Sprintf("\n↑↓ move  ←→ fold  ⏎ open  b branch  L label  d density:%s  esc close\n", u.m.Density))
+	scope := "this session"
+	if u.scopeAll {
+		scope = "all sessions"
+	}
+	b.WriteString(fmt.Sprintf("\n↑↓ move  ←→ fold  ⏎ open  b branch  L label  a scope:%s  esc close\n", scope))
 	if u.busy != "" {
 		b.WriteString(u.busy + "\n")
 	}
@@ -298,7 +328,8 @@ func (u uiModel) View() string {
 // Run starts the overlay.
 func Run(a adapter.Adapter, repoRoot string, st *store.Store, sessions []adapter.Session, current string) error {
 	roots := tree.Build(sessions, st)
-	u := uiModel{m: New(roots), a: a, st: st, repoRoot: repoRoot, current: current}
+	u := uiModel{m: New(roots), a: a, st: st, repoRoot: repoRoot, current: current, roots: roots}
+	u.rebuild() // start scoped to the current session
 	_, err := tea.NewProgram(u, tea.WithAltScreen()).Run()
 	return err
 }
