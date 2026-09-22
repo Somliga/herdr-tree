@@ -1,6 +1,7 @@
 package claude
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -46,6 +47,19 @@ func TestGraftSeededAppendsTheSeedAsTheLastTurn(t *testing.T) {
 	}
 	if last.SessionID() != sid {
 		t.Fatalf("seed carries session %q, want %q", last.SessionID(), sid)
+	}
+	// The leaf pointer is what makes the seed the turn Claude Code resumes at.
+	// Without it the summary is written, and never read.
+	var leaf string
+	for _, e := range es {
+		if e.Type() == "last-prompt" {
+			if lu, ok := e.Raw["leafUuid"].(string); ok {
+				leaf = lu
+			}
+		}
+	}
+	if leaf != last.UUID() {
+		t.Fatalf("last-prompt points at %q, want the seed %q", leaf, last.UUID())
 	}
 	k, keep := Classify(last, false)
 	if !keep || k != adapter.KindSummaryImport {
@@ -260,7 +274,6 @@ func TestSeedKindIsDerivedFromThePrefix(t *testing.T) {
 	}{
 		{SummaryPrefix + " abc\n\nx", "summary"},
 		{CompactionPrefix + " t3..t9\n\nx", "compaction"},
-		{"something with no prefix at all", nil},
 	} {
 		projects := t.TempDir()
 		t.Setenv("CLAUDE_PROJECTS_DIR", projects)
@@ -278,16 +291,30 @@ func TestSeedKindIsDerivedFromThePrefix(t *testing.T) {
 				last = e
 			}
 		}
-		got, present := last.Raw["herdrTree"]
-		if c.want == nil {
-			if present {
-				t.Fatalf("an unprefixed seed must carry no herdrTree, got %v", got)
-			}
-			continue
-		}
+		got := last.Raw["herdrTree"]
 		m, ok := got.(map[string]any)
 		if !ok || m["kind"] != c.want {
 			t.Fatalf("seed %q got herdrTree %v, want kind %v", c.seed[:12], got, c.want)
+		}
+	}
+}
+
+// An unmarked seed would be written, would drive the resume, and would be
+// invisible in the tree: on an origin-stamped transcript Classify takes the
+// authoritative path, finds no origin on an entry we wrote, and drops it.
+func TestGraftSeededRefusesAnUnmarkedSeed(t *testing.T) {
+	for _, seed := range []string{"carry on with the token service", " ", "\n" + SummaryPrefix + " abc"} {
+		projects := t.TempDir()
+		t.Setenv("CLAUDE_PROJECTS_DIR", projects)
+		_, path, err := GraftSeeded("testdata/simple.jsonl", "u3", t.TempDir(), seed)
+		if !errors.Is(err, ErrUnmarkedSeed) {
+			t.Fatalf("seed %q: got err %v, want ErrUnmarkedSeed", seed, err)
+		}
+		if path != "" {
+			t.Fatalf("seed %q: refused but still wrote %s", seed, path)
+		}
+		if ents, _ := os.ReadDir(projects); len(ents) != 0 {
+			t.Fatalf("seed %q: refused but left %d entries behind", seed, len(ents))
 		}
 	}
 }

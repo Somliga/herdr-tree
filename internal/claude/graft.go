@@ -10,6 +10,15 @@ import (
 	"time"
 )
 
+// ErrUnmarkedSeed means a seed carried neither prefix. Such an entry would be
+// written to disk and drive the resume, but Classify would drop it from the
+// tree: on an origin-stamped transcript — which every recent one is — the
+// authoritative path finds no origin on an entry we wrote and discards it. The
+// result is a turn that exists, steers the conversation, and is invisible. An
+// unmarked seed has no use in this design, so it is refused rather than
+// papered over with a forged origin.
+var ErrUnmarkedSeed = errors.New("seed carries neither summary nor compaction prefix")
+
 // ErrNodeNotFound means the requested graft point is not in the transcript.
 var ErrNodeNotFound = errors.New("graft node not found in transcript")
 
@@ -174,6 +183,9 @@ func Graft(srcPath, atNode, dstCWD string) (newSessionID, dstPath string, err er
 // CompactionPrefix) — seed lands as the first bytes of the entry's text,
 // nothing prepended.
 func GraftSeeded(srcPath, atNode, dstCWD, seed string) (newSessionID, dstPath string, err error) {
+	if seed != "" && !strings.HasPrefix(seed, SummaryPrefix) && !strings.HasPrefix(seed, CompactionPrefix) {
+		return "", "", ErrUnmarkedSeed
+	}
 	es, skipped, err := ParseFile(srcPath)
 	if err != nil {
 		return "", "", err
@@ -263,12 +275,11 @@ func GraftSeeded(srcPath, atNode, dstCWD, seed string) (newSessionID, dstPath st
 			"message": map[string]any{"role": "user",
 				"content": []any{map[string]any{"type": "text", "text": seed}}},
 		}
-		switch {
-		case strings.HasPrefix(seed, SummaryPrefix):
-			raw["herdrTree"] = map[string]any{"kind": "summary"}
-		case strings.HasPrefix(seed, CompactionPrefix):
-			raw["herdrTree"] = map[string]any{"kind": "compaction"}
+		kind := "compaction"
+		if strings.HasPrefix(seed, SummaryPrefix) {
+			kind = "summary"
 		}
+		raw["herdrTree"] = map[string]any{"kind": kind}
 		b, err := Marshal(Entry{Raw: raw})
 		if err != nil {
 			return "", "", err
