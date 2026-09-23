@@ -69,9 +69,9 @@ squash · squash into… · drop · esc back
 
 - **squash** — the range is replaced by its summary in its own
   line (a compaction).
-- **squash into…** — a move: the range is summarised, the user chooses
-  where to merge the summary in, and only then is the range dropped from its
-  own line (§2.7).
+- **squash into…** — a move: the user chooses where the summary goes, then
+  confirms once; only then is the range summarised, merged there, and dropped
+  from its own line (§2.7).
 - **drop** — the range is removed.
 
 **No edit opens a pane.** Every edit only writes; the tree reloads with the
@@ -87,8 +87,10 @@ or stops at the first failure (§6).
   to the end of the range … that whole prefix is billed"), then:
   `Then: turns <a>–<b> are replaced by the summary · a new session replaces
   this line in the tree (the old one is hidden, kept on disk)`.
-- **squash into…**: the same cost text, then `Then: you choose where to merge
-  it in. When you do, turns <a>–<b> are dropped from this line.`
+- **squash into…**: no dialog when chosen — nothing is paid or written yet; the
+  target is chosen first (§2.7), and the one confirmation comes after it: the
+  same cost text, then `Then: the summary is merged into <target> · turns
+  <a>–<b> are dropped from <source8>` (or `…branched at <target>…`).
 - **drop**: `Removes turns <a>–<b>. Costs nothing. No note is left in the
   conversation.` plus the same replacement line.
 
@@ -104,7 +106,7 @@ be adjusted.
 - The session's live agent is busy (§6.1). For squash into… this is checked
   when the summary is placed, since that is when the source is written.
 - A squash into… whose range covers every turn of its line (it would leave
-  nothing); checked before the summary is paid for.
+  nothing); checked when squash into… is chosen, before anything is paid for.
 - A drop would remove every turn.
 - The range is not on the chain up to the session's tip (§3.3).
 
@@ -133,27 +135,30 @@ merge, and `s` → drop covers it.
 Both summarise options store the summary exactly as v2 does, so `p` can merge
 the same summary into another line later.
 
-### 2.7 Fold mode — a move
+### 2.7 squash into… — choose the target, then pay
 
-After **squash into…**'s summary arrives, the overlay stays open in fold
-mode, status `summary ready — move to a turn and press ⏎ to merge it in · esc
-keeps it for later (p)`.
+Choosing **squash into…** puts the overlay in target mode — nothing is paid
+or written yet. Status `move to a turn and press ⏎ to squash turns <a>–<b>
+into it · esc cancels`.
 
-- `⏎` on a turn does what choosing that summary in `p`'s picker does (§2.5):
-  delivered as a message at the live tip, the merge/branch menu elsewhere —
-  **and then the range is dropped from its source line**, as a `drop` (§5.1,
-  the `✂` marker). The place menu and its confirmation say so:
-  `…and turns <a>–<b> are dropped from <source8>`.
-- Before anything is written, the source's agent is checked (§6.1); if busy,
-  nothing is written anywhere.
+- `⏎` on a turn in another line does what `p` does for a stored summary
+  (§2.5): the live tip takes it as a message, anywhere else the merge/branch
+  menu. Then ONE confirmation: the cost text (Preview of the source at the
+  range's end, "…billed"), then `Then: the summary is merged into <target8> ·
+  turns <a>–<b> are dropped from <source8>` (branch: `…a new line branches at
+  <target8>…`; live tip: `…sent to <agent> as your next message…`).
 - Merging into the source line itself is refused (`merge into another line —
-  use squash for this one`).
-- **Order: the squash is written first, then the drop.** If the drop fails,
-  the status says `squashed into <x>, but the source was not dropped: <err>`
-  — a copy, nothing lost. The reverse order could lose the stretch with its
-  summary nowhere.
-- `esc` leaves fold mode and cancels the move: the source is untouched and the
-  summary stays stored for `p` (which never drops).
+  use squash for this one`); stays in target mode.
+- `esc` in target mode, the place menu or the confirmation cancels the move.
+  Nothing was paid, nothing written.
+- On confirm, in order, each step only if the one before succeeded:
+  1. the source's agent is checked (§6.1); busy → nothing paid, nothing written;
+  2. summarise (billed) and store the summary (so `p` can reuse it);
+  3. write the squash at the target (message, merge or branch);
+  4. re-check the source and drop the range from it (a `drop`, §5.1, `✂`).
+  If the summary fails, nothing is written. If step 3 fails, nothing is
+  dropped. If step 4 fails, the status says `squashed into <x>, but the source
+  was not dropped: <err>` — a copy, nothing lost.
 
 ## 3. The splice
 
@@ -233,9 +238,9 @@ after the last boundary — the same line the tree shows.
 
 If the summary call fails, nothing is written or hidden.
 
-squash into… is steps 2–3 (the whole-line refusal instead of the busy
-check), then fold mode (§2.7), where the placement writes the squash and then
-drops the source.
+squash into… chooses its target before anything is paid (§2.7); its
+confirmation then runs the busy check, the summary, the squash at the target,
+and the drop from the source, in that order.
 
 ## 5. Store and tree
 
