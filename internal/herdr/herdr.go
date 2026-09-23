@@ -56,8 +56,12 @@ func Bin() string {
 // The argv builders are separated from the calls so that flag ordering and
 // the placement of "--" are regression-tested without a running herdr.
 
-func splitArgv(cwd string) []string {
-	return []string{"pane", "split", "--current", "--direction", "right", "--cwd", cwd, "--no-focus"}
+func splitArgv(cwd string, focus bool) []string {
+	argv := []string{"pane", "split", "--current", "--direction", "right", "--cwd", cwd}
+	if !focus {
+		argv = append(argv, "--no-focus")
+	}
+	return argv
 }
 
 func agentStartArgv(name, paneID, sessionID string) []string {
@@ -237,12 +241,14 @@ func parseSplit(b []byte) (string, error) {
 	return r.Result.Pane.PaneID, nil
 }
 
-// Split opens a sibling pane to the right without stealing focus.
-func Split(cwd string) (string, error) {
+// Split opens a sibling pane to the right, taking focus only when asked. A
+// branch opens beside the conversation the user is in and must not pull them
+// away; a replacement is where they are going next.
+func Split(cwd string, focus bool) (string, error) {
 	if err := checkArg("cwd", cwd); err != nil {
 		return "", err
 	}
-	out, err := run(splitArgv(cwd)...)
+	out, err := run(splitArgv(cwd, focus)...)
 	if err != nil {
 		return "", err
 	}
@@ -298,11 +304,39 @@ type agentListResp struct {
 	Result struct {
 		Agents []struct {
 			PaneID       string `json:"pane_id"`
+			AgentStatus  string `json:"agent_status"`
 			AgentSession *struct {
 				Value string `json:"value"`
 			} `json:"agent_session"`
 		} `json:"agents"`
 	} `json:"result"`
+}
+
+type agentInfo struct{ pane, status string }
+
+// parseAgents is parseAgentList with each agent's status kept, and the
+// sessions two panes claim reported rather than silently dropped.
+func parseAgents(b []byte) (map[string]agentInfo, map[string]bool, error) {
+	var r agentListResp
+	if err := json.Unmarshal(b, &r); err != nil {
+		return nil, nil, err
+	}
+	out := map[string]agentInfo{}
+	ambiguous := map[string]bool{}
+	for _, a := range r.Result.Agents {
+		if a.PaneID == "" || a.AgentSession == nil || a.AgentSession.Value == "" {
+			continue // an agent still starting has no session yet
+		}
+		sid := a.AgentSession.Value
+		if _, seen := out[sid]; seen {
+			ambiguous[sid] = true
+		}
+		out[sid] = agentInfo{pane: a.PaneID, status: a.AgentStatus}
+	}
+	for sid := range ambiguous {
+		delete(out, sid)
+	}
+	return out, ambiguous, nil
 }
 
 // parseAgentList maps each live agent's session id to the PANE holding it.
@@ -318,24 +352,13 @@ type agentListResp struct {
 // reporting the same session is reachable — and guessing there would deliver
 // a summary into a conversation the user was not looking at.
 func parseAgentList(b []byte) (map[string]string, error) {
-	var r agentListResp
-	if err := json.Unmarshal(b, &r); err != nil {
+	agents, _, err := parseAgents(b)
+	if err != nil {
 		return nil, err
 	}
-	out := map[string]string{}
-	ambiguous := map[string]bool{}
-	for _, a := range r.Result.Agents {
-		if a.PaneID == "" || a.AgentSession == nil || a.AgentSession.Value == "" {
-			continue // an agent still starting has no session yet
-		}
-		sid := a.AgentSession.Value
-		if _, seen := out[sid]; seen {
-			ambiguous[sid] = true
-		}
-		out[sid] = a.PaneID
-	}
-	for sid := range ambiguous {
-		delete(out, sid)
+	out := make(map[string]string, len(agents))
+	for sid, a := range agents {
+		out[sid] = a.pane
 	}
 	return out, nil
 }
@@ -359,6 +382,38 @@ func AgentForSession(sessionID string) (string, error) {
 		return "", fmt.Errorf("%s: %w", sessionID, ErrNoLiveAgent)
 	}
 	return target, nil
+}
+
+// AgentState reports the pane holding sessionID and herdr's agent_status for
+// it ("working", "idle", …). No agent holding it is not an error: both are
+// empty. Two panes claiming it is, because the caller is about to close one.
+func AgentState(sessionID string) (pane, status string, err error) {
+	if err := checkArg("session id", sessionID); err != nil {
+		return "", "", err
+	}
+	out, err := run(agentListArgv()...)
+	if err != nil {
+		return "", "", err
+	}
+	agents, ambiguous, err := parseAgents(out)
+	if err != nil {
+		return "", "", err
+	}
+	if ambiguous[sessionID] {
+		return "", "", fmt.Errorf("%s is open in more than one pane", sessionID)
+	}
+	a := agents[sessionID]
+	return a.pane, a.status, nil
+}
+
+// ClosePane closes a pane. herdr does not refuse a busy one; the caller
+// checks agent_status first.
+func ClosePane(paneID string) error {
+	if err := checkArg("pane id", paneID); err != nil {
+		return err
+	}
+	_, err := run("pane", "close", paneID)
+	return err
 }
 
 // AgentPrompt sends text to a running agent as if typed. A successful return

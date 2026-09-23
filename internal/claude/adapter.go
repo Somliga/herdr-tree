@@ -133,8 +133,8 @@ func agentName(sessionID, paneID string) string {
 
 // Resume asks Herdr for a pane and starts Claude in it. Nothing is spawned
 // by this process.
-func (claudeAdapter) Resume(sessionID, cwd string) error {
-	paneID, err := herdr.Split(cwd)
+func (claudeAdapter) Resume(sessionID, cwd string, focus bool) error {
+	paneID, err := herdr.Split(cwd, focus)
 	if err != nil {
 		return fmt.Errorf("open pane: %w", err)
 	}

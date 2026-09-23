@@ -281,7 +281,7 @@ func (u uiModel) dstCWD(n *tree.Node) string {
 
 func resumeCmd(a adapter.Adapter, n *tree.Node, dst string) tea.Cmd {
 	return func() tea.Msg {
-		if err := a.Resume(n.SessionID, dst); err != nil {
+		if err := a.Resume(n.SessionID, dst, false); err != nil {
 			return actionDoneMsg{status: "could not open session: " + err.Error()}
 		}
 		return actionDoneMsg{status: "opened " + shortID(n.SessionID), quit: true}
@@ -305,7 +305,7 @@ func branchCmd(a adapter.Adapter, st *store.Store, n *tree.Node, dst string) tea
 		if err := st.Save(); err != nil {
 			return actionDoneMsg{status: "branched " + shortID(sid) + ", but the tree was not saved: " + err.Error()}
 		}
-		if err := a.Resume(sid, dst); err != nil {
+		if err := a.Resume(sid, dst, false); err != nil {
 			return actionDoneMsg{status: "branched " + shortID(sid) + ", but it did not open: " + err.Error()}
 		}
 		return actionDoneMsg{status: "branched " + shortID(sid), quit: true}
@@ -430,7 +430,7 @@ func foldBackCmd(a adapter.Adapter, st *store.Store, at *tree.Node, dst string, 
 		if err := st.Save(); err != nil {
 			return actionDoneMsg{status: "folded " + shortID(sid) + ", but the tree was not saved: " + err.Error()}
 		}
-		if err := a.Resume(sid, dst); err != nil {
+		if err := a.Resume(sid, dst, false); err != nil {
 			return actionDoneMsg{status: "folded " + shortID(sid) + ", but it did not open: " + err.Error()}
 		}
 		return actionDoneMsg{status: "folded into " + shortID(sid), quit: true}

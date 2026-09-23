@@ -1,13 +1,13 @@
 package herdr
 
 import (
-	"strconv"
-	"time"
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // stubHerdr puts a fake `herdr` first on PATH and clears HERDR_BIN_PATH so
@@ -83,7 +83,7 @@ func TestArgvOrderingAndSeparator(t *testing.T) {
 	// herdr does NOT accept --flag=value (verified against the real binary:
 	// it answers "unknown option"), so ordering and the -- separator are the
 	// only things standing between data and the flag parser.
-	got := strings.Join(splitArgv("/repo"), " ")
+	got := strings.Join(splitArgv("/repo", false), " ")
 	want := "pane split --current --direction right --cwd /repo --no-focus"
 	if got != want {
 		t.Fatalf("splitArgv:\n got %q\nwant %q", got, want)
@@ -120,7 +120,7 @@ func TestRefusesArgumentsThatWouldBeReadAsFlags(t *testing.T) {
 	// A directory literally named "-foo" cannot be passed safely, because the
 	// --flag=value escape hatch does not exist in this CLI. Refusing beats
 	// letting herdr parse it as a flag.
-	if _, err := Split("-rf"); !errors.Is(err, ErrUnsafeArgument) {
+	if _, err := Split("-rf", false); !errors.Is(err, ErrUnsafeArgument) {
 		t.Fatalf("Split: got %v want ErrUnsafeArgument", err)
 	}
 	if err := OpenTreePane("--placement", ""); !errors.Is(err, ErrUnsafeArgument) {
@@ -413,5 +413,57 @@ func TestAgentPromptUsesItsOwnBudgetNotTheDefault(t *testing.T) {
 
 	if err := AgentPrompt("tree-abc", "⤶ summary of abc\n\nbody"); err != nil {
 		t.Fatalf("agent prompt fell back to the default budget: %v", err)
+	}
+}
+
+func TestSplitFocusesOnlyWhenAsked(t *testing.T) {
+	if got := strings.Join(splitArgv("/r", false), " "); !strings.HasSuffix(got, "--no-focus") {
+		t.Fatalf("unfocused split argv %q", got)
+	}
+	if got := strings.Join(splitArgv("/r", true), " "); strings.Contains(got, "--no-focus") {
+		t.Fatalf("focused split still passes --no-focus: %q", got)
+	}
+}
+
+func TestAgentStateReportsPaneAndStatus(t *testing.T) {
+	b, err := os.ReadFile("testdata/agent-list.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stubHerdr(t, "cat <<'EOF'\n"+string(b)+"\nEOF")
+	pane, status, err := AgentState("bdf6207b-7062-4f33-93c4-e86a0b3b438d")
+	if err != nil || pane != "wA:p1" || status != "working" {
+		t.Fatalf("got %q %q %v, want wA:p1 working", pane, status, err)
+	}
+	pane, status, err = AgentState("00000000-0000-4000-8000-000000000000")
+	if err != nil || pane != "" || status != "" {
+		t.Fatalf("an unheld session: got %q %q %v, want nothing", pane, status, err)
+	}
+}
+
+// Two panes claiming one session is reachable (see parseAgentList). Closing
+// either could kill the conversation the user is looking at, so it is an
+// error, not a guess.
+func TestAgentStateRefusesAnAmbiguousSession(t *testing.T) {
+	stubHerdr(t, `echo '{"result":{"agents":[
+{"pane_id":"p1","agent_status":"idle","agent_session":{"value":"s1"}},
+{"pane_id":"p2","agent_status":"idle","agent_session":{"value":"s1"}}]}}'`)
+	if _, _, err := AgentState("s1"); err == nil {
+		t.Fatal("want an error for a session two panes claim")
+	}
+}
+
+func TestClosePaneArgvAndRefusal(t *testing.T) {
+	log := filepath.Join(t.TempDir(), "argv")
+	stubHerdr(t, `echo "$@" > `+log)
+	if err := ClosePane("wA:p9"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(log)
+	if strings.TrimSpace(string(got)) != "pane close wA:p9" {
+		t.Fatalf("argv %q, want pane close wA:p9", got)
+	}
+	if err := ClosePane("-x"); !errors.Is(err, ErrUnsafeArgument) {
+		t.Fatalf("err = %v, want ErrUnsafeArgument", err)
 	}
 }

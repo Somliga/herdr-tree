@@ -69,7 +69,7 @@ type Adapter interface {
 	Preview(src Session, atNode string) (turns, entries int, size int64, err error)
 	Branch(src Session, atNode, dstCWD string) (newSessionID string, err error)
 	BranchSeeded(src Session, atNode, dstCWD, seed string) (newSessionID string, err error)
-	Resume(sessionID, cwd string) error
+	Resume(sessionID, cwd string, focus bool) error
 	Summarise(src Session, fromTurn, toTurn string) (string, error)
 	// Widen reports what a range covers once widened to whole turns.
 	Widen(src Session, fromNode, toNode string) (Span, error)

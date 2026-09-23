@@ -78,6 +78,7 @@ type fakeAdapter struct {
 	summarisedFrom, summarisedTo string
 	seededWith                   string
 	resumed                      string
+	focused                      bool
 
 	span      adapter.Span
 	spliceErr error
@@ -98,8 +99,8 @@ func (f *fakeAdapter) BranchSeeded(_ adapter.Session, _, _, seed string) (string
 	f.seededWith = seed
 	return "new-sid", nil
 }
-func (f *fakeAdapter) Resume(sessionID, _ string) error {
-	f.resumed = sessionID
+func (f *fakeAdapter) Resume(sessionID, _ string, focus bool) error {
+	f.resumed, f.focused = sessionID, focus
 	return f.resumeErr
 }
 func (f *fakeAdapter) Summarise(_ adapter.Session, fromTurn, toTurn string) (string, error) {
