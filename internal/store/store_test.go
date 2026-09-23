@@ -326,3 +326,72 @@ func equalStrings(a, b []string) bool {
 	}
 	return true
 }
+
+func TestReplaceHidesTheOldLineAndPutsTheNewOneInItsPlace(t *testing.T) {
+	t.Setenv("HERDR_PLUGIN_CONFIG_DIR", t.TempDir())
+	s, _ := Load("/repo")
+	s.Add("old", Branch{GraftedFrom: From{SessionID: "trunk", Node: "t4"}, Title: "b"})
+	s.Replace("old", "new", Branch{Kind: KindCompacted, Title: "⤶ x"})
+
+	if s.Branches["old"].ReplacedBy != "new" {
+		t.Fatal("old is not marked replaced")
+	}
+	nb := s.Branches["new"]
+	if nb.Replaces != "old" || nb.Kind != KindCompacted {
+		t.Fatalf("new record %+v", nb)
+	}
+	if nb.GraftedFrom != (From{SessionID: "trunk", Node: "t4"}) {
+		t.Fatalf("new line does not hang where the old one did: %+v", nb.GraftedFrom)
+	}
+}
+
+func TestReplacingALineWithNoRecordCreatesOne(t *testing.T) {
+	t.Setenv("HERDR_PLUGIN_CONFIG_DIR", t.TempDir())
+	s, _ := Load("/repo")
+	s.Replace("root-sess", "new", Branch{Kind: KindCut})
+	if s.Branches["root-sess"].ReplacedBy != "new" {
+		t.Fatal("no record was created for the replaced root session")
+	}
+	if s.Branches["new"].GraftedFrom.SessionID != "" {
+		t.Fatal("a replaced root must stay a root")
+	}
+}
+
+func TestResolveFollowsReplacementsAndSurvivesACycle(t *testing.T) {
+	s := &Store{Branches: map[string]Branch{
+		"a": {ReplacedBy: "b"}, "b": {ReplacedBy: "c"},
+		"x": {ReplacedBy: "y"}, "y": {ReplacedBy: "x"},
+	}}
+	if got := s.Resolve("a"); got != "c" {
+		t.Fatalf("Resolve(a) = %q, want c", got)
+	}
+	if got := s.Resolve("q"); got != "q" {
+		t.Fatalf("Resolve of an unknown session = %q, want itself", got)
+	}
+	s.Resolve("x") // must return, not hang
+}
+
+// A second overlay that loaded before the replacement and saves something
+// unrelated must not un-hide the old line.
+func TestSaveNeverClearsAReplacement(t *testing.T) {
+	t.Setenv("HERDR_PLUGIN_CONFIG_DIR", t.TempDir())
+	s1, _ := Load("/repo")
+	s1.Add("old", Branch{Title: "b"})
+	if err := s1.Save(); err != nil {
+		t.Fatal(err)
+	}
+	stale, _ := Load("/repo")
+
+	s1.Replace("old", "new", Branch{Kind: KindCut})
+	if err := s1.Save(); err != nil {
+		t.Fatal(err)
+	}
+	stale.SetLabel("old", "t1", "landmark")
+	if err := stale.Save(); err != nil {
+		t.Fatal(err)
+	}
+	after, _ := Load("/repo")
+	if after.Branches["old"].ReplacedBy != "new" {
+		t.Fatal("a stale save cleared replaced_by")
+	}
+}

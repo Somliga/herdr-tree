@@ -27,7 +27,28 @@ type Branch struct {
 	Title       string    `json:"title"`
 	CreatedAt   time.Time `json:"created_at"`
 	Artifacts   []string  `json:"artifacts"` // always [], populated in v1.1
+
+	// A splice writes a new session and retires the old one. The old
+	// record gets ReplacedBy; the new one Replaces, Kind, and for a cut,
+	// Cut. The transcript of a replaced session stays on disk.
+	ReplacedBy string `json:"replaced_by,omitempty"`
+	Replaces   string `json:"replaces,omitempty"`
+	Kind       string `json:"kind,omitempty"`
+	Cut        *Cut   `json:"cut,omitempty"`
 }
+
+// Cut is what the tree needs to mark a removed stretch: nothing about a cut
+// is left in the transcript itself.
+type Cut struct {
+	Turns int    `json:"turns"`
+	At    string `json:"at"` // first entry after the cut; "" when nothing follows
+}
+
+const (
+	KindCompacted = "compacted"
+	KindCut       = "cut"
+	KindInserted  = "inserted"
+)
 
 // Summary is an LLM summary of a RANGE of turns. It belongs to a span, not a
 // session: the same session can be summarised over different spans, and
@@ -182,6 +203,33 @@ func (s *Store) Add(sessionID string, b Branch) {
 	s.Branches[sessionID] = b
 }
 
+// Replace records that newSID replaces oldSID. The new line takes the old
+// one's place — including where it hung, so a compacted branch stays under
+// the trunk turn it left.
+func (s *Store) Replace(oldSID, newSID string, b Branch) {
+	old := s.Branches[oldSID]
+	old.ReplacedBy = newSID
+	s.Add(oldSID, old)
+	b.GraftedFrom = old.GraftedFrom
+	b.Replaces = oldSID
+	s.Add(newSID, b)
+}
+
+// Resolve follows replaced_by from sessionID to the line that now stands in
+// its place, through any number of splices.
+func (s *Store) Resolve(sessionID string) string {
+	seen := map[string]bool{}
+	for !seen[sessionID] {
+		seen[sessionID] = true
+		next := s.Branches[sessionID].ReplacedBy
+		if next == "" {
+			return sessionID
+		}
+		sessionID = next
+	}
+	return sessionID // a cycle in a hand-edited store: stop where it closed
+}
+
 // ErrNoPath means Save was called on a Store that did not come from Load, so
 // it has no file to write to. Without this guard filepath.Dir("") is ".", and
 // Save would silently create tree.json in the process's working directory.
@@ -194,17 +242,25 @@ var ErrNoPath = errors.New("store has no path; use Load to obtain one")
 // branch, and each Save. A plain overwrite would silently discard the branch
 // the other pane just created — and a graft edge is the one piece of data
 // that exists nowhere else, so losing it orphans a real session in the tree.
-// Re-reading first costs one file read and removes the whole race. v1 never
-// deletes a branch, so a merge can never resurrect something intentionally
-// removed.
+// Re-reading first costs one file read and removes the whole race. Nothing
+// deletes a branch, and replaced_by is never cleared, so a merge can never
+// resurrect something intentionally removed.
 func (s *Store) Save() error {
 	if s.path == "" {
 		return ErrNoPath
 	}
 	if onDisk, err := Load(s.RepoRoot); err == nil {
 		for id, b := range onDisk.Branches {
-			if _, ours := s.Branches[id]; !ours {
+			ours, ok := s.Branches[id]
+			if !ok {
 				s.Branches[id] = b
+				continue
+			}
+			// Replacement is one-way: a store loaded before it must not
+			// clear it by saving something unrelated.
+			if ours.ReplacedBy == "" && b.ReplacedBy != "" {
+				ours.ReplacedBy = b.ReplacedBy
+				s.Branches[id] = ours
 			}
 		}
 		for k, v := range onDisk.Labels {
