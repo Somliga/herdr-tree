@@ -19,6 +19,11 @@ type (
 	ClosePaneFunc func(paneID string) error
 )
 
+// busy reports whether an agent_status forbids touching the session under
+// it. Only idle is safe: working, blocked, or a status herdr adds later all
+// mean a turn may be running. "" is no agent at all.
+func busy(status string) bool { return status != "" && status != "idle" }
+
 // editOp is one context edit, captured when its confirmation is raised.
 type editOp struct {
 	src       adapter.Session
@@ -27,7 +32,6 @@ type editOp struct {
 	summarise bool       // compact: the seed is produced first
 	from, to  *tree.Node // compact: the range to summarise
 	title     string     // row title for the new record
-	pane      string     // pane holding src at confirm time, for the busy re-check; "" if none
 	dst       string
 }
 
@@ -74,18 +78,22 @@ func editCmd(a adapter.Adapter, st *store.Store, op editOp, live LiveFunc) tea.C
 			op.edit.Seed = foldBackSeed(op.from, sum, true)
 			op.title = "⤶ " + title(sum.Text, 40)
 		}
-		if op.pane != "" {
-			// The summary call takes minutes. Whatever was true at confirm
-			// time is checked again right before the transcript is read.
+		if live != nil {
+			// The summary call takes minutes, and a pane may have opened on
+			// the session meanwhile. Whatever was true at confirm time is
+			// checked again right before the transcript is read.
 			_, status, err := live(op.src.ID)
 			if err != nil {
+				if op.summarise {
+					return actionDoneMsg{status: "summary stored — cannot tell whether the session is busy: " + scrubbed(err, op.edit.Seed) + "; nothing was spliced"}
+				}
 				return actionDoneMsg{status: "cannot tell whether the session is busy: " + scrubbed(err, op.edit.Seed) + " — nothing was written"}
 			}
-			if status == "working" {
+			if busy(status) {
 				if op.summarise {
-					return actionDoneMsg{status: "summary stored — agent is busy; select again or use p"}
+					return actionDoneMsg{status: "summary stored — agent is " + status + "; select again or use p"}
 				}
-				return actionDoneMsg{status: "agent is working — wait for it to finish; nothing was written"}
+				return actionDoneMsg{status: "agent is " + status + " — wait for it to finish; nothing was written"}
 			}
 		}
 		res, err := a.Splice(op.src, op.edit, op.dst)
@@ -111,11 +119,19 @@ func editCmd(a adapter.Adapter, st *store.Store, op editOp, live LiveFunc) tea.C
 
 // handoverCmd opens a replacement with focus and only then closes the pane
 // still running the line it replaced (§6.2): if the open fails, the old pane
-// is all the user has, so it stays.
-func handoverCmd(a adapter.Adapter, sid, dst, oldPane string, closePane ClosePaneFunc) tea.Cmd {
+// is all the user has, so it stays. The confirmation may have sat on screen a
+// while, so the old pane is checked again before it is closed.
+func handoverCmd(a adapter.Adapter, sid, dst, old, oldPane string, live LiveFunc, closePane ClosePaneFunc) tea.Cmd {
 	return func() tea.Msg {
 		if err := a.Resume(sid, dst, true); err != nil {
 			return actionDoneMsg{status: "could not open " + shortID(sid) + " — old pane left running: " + err.Error()}
+		}
+		pane, status, err := live(old)
+		if err != nil {
+			return actionDoneMsg{status: "opened " + shortID(sid) + " — old pane left running: " + err.Error()}
+		}
+		if pane != oldPane || busy(status) {
+			return actionDoneMsg{status: "opened " + shortID(sid) + " — old pane left running: its agent is " + status}
 		}
 		if err := closePane(oldPane); err != nil {
 			return actionDoneMsg{status: "opened " + shortID(sid) + ", but the old pane did not close: " + err.Error()}
@@ -124,10 +140,22 @@ func handoverCmd(a adapter.Adapter, sid, dst, oldPane string, closePane ClosePan
 	}
 }
 
-// openTip is ⏎ on a line's tip. If a line it replaced is still open in a
-// pane, that pane is handed over after a confirmation; otherwise it is a
-// plain resume, with nothing to confirm.
+// openTip is ⏎ on a line's tip. A tip already open in a pane is left alone:
+// a second claude on one transcript would interleave both. If a line it
+// replaced is still open in a pane, that pane is handed over after a
+// confirmation; otherwise it is a plain resume, with nothing to confirm.
 func (u uiModel) openTip(n *tree.Node) (tea.Model, tea.Cmd) {
+	if u.live != nil {
+		pane, _, err := u.live(n.SessionID)
+		if err != nil {
+			u.status = "cannot tell whether this session is open: " + err.Error()
+			return u, nil
+		}
+		if pane != "" {
+			u.status = "already open in pane " + pane
+			return u, nil
+		}
+	}
 	if u.live != nil && u.st != nil {
 		seen := map[string]bool{n.SessionID: true}
 		for old := u.st.Branches[n.SessionID].Replaces; old != "" && !seen[old]; old = u.st.Branches[old].Replaces {
@@ -140,12 +168,12 @@ func (u uiModel) openTip(n *tree.Node) (tea.Model, tea.Cmd) {
 			if pane == "" {
 				continue
 			}
-			if status == "working" {
-				u.status = "the old line's agent is working — wait for it to finish"
+			if busy(status) {
+				u.status = "the old line's agent is " + status + " — wait for it to finish"
 				return u, nil
 			}
 			u.confirm = fmt.Sprintf("Continue on the new line:  %q\n\nThe pane running the old line is closed; text typed but not sent there is lost.\n\n[enter] continue   [esc] back", n.Node.Title)
-			u.pending, u.pendingBusy = handoverCmd(u.a, n.SessionID, u.dstCWD(n), pane, u.closePane), "opening session…"
+			u.pending, u.pendingBusy = handoverCmd(u.a, n.SessionID, u.dstCWD(n), old, pane, u.live, u.closePane), "opening session…"
 			return u, nil
 		}
 	}
@@ -173,12 +201,9 @@ func (u uiModel) editConfirm(kind string) (tea.Model, tea.Cmd) {
 		return u, nil
 	}
 	src := adapter.Session{ID: to.SessionID, CWD: to.SessionCWD, Path: to.SessionPath}
-	var pane string
-	if kind != kindFold {
-		// Fold never touches this line, so its agent may be doing anything.
-		if pane, ok = u.liveCheck(src.ID); !ok {
-			return u, nil
-		}
+	// Fold never touches this line, so its agent may be doing anything.
+	if kind != kindFold && !u.liveCheck(src.ID) {
+		return u, nil
 	}
 	sp, err := u.a.Widen(src, from.Node.ID, to.Node.ID)
 	if err != nil {
@@ -186,7 +211,7 @@ func (u uiModel) editConfirm(kind string) (tea.Model, tea.Cmd) {
 		return u, nil
 	}
 	op := editOp{src: src, edit: adapter.Edit{From: from.Node.ID, To: to.Node.ID}, kind: kind,
-		from: from, to: to, pane: pane, dst: u.dstCWD(to), title: "✂ " + from.Node.Title}
+		from: from, to: to, dst: u.dstCWD(to), title: "✂ cut"}
 	if kind == store.KindCut {
 		text := fmt.Sprintf("Cut turns %d–%d:\n\n  from  %q\n  to    %q\n\nRemoves turns %d–%d. Costs nothing. No note is left in the conversation.\n%s",
 			sp.First, sp.Last, from.Node.Title, to.Node.Title, sp.First, sp.Last, replacesLine)
@@ -214,23 +239,23 @@ func (u uiModel) editConfirm(kind string) (tea.Model, tea.Cmd) {
 	return u, nil
 }
 
-// liveCheck resolves which pane holds sessionID. ok=false means the edit is
-// refused and u.status says why: a working agent, or a herdr that will not
-// say — an edit must know whether a turn is running under it, not guess.
-func (u *uiModel) liveCheck(sessionID string) (pane string, ok bool) {
+// liveCheck reports whether sessionID may be edited. false means the edit is
+// refused and u.status says why: a busy agent, or a herdr that will not say —
+// an edit must know whether a turn is running under it, not guess.
+func (u *uiModel) liveCheck(sessionID string) bool {
 	if u.live == nil {
-		return "", true
+		return true
 	}
-	pane, status, err := u.live(sessionID)
+	_, status, err := u.live(sessionID)
 	if err != nil {
 		u.status = "cannot tell whether this session is open: " + err.Error()
-		return "", false
+		return false
 	}
-	if status == "working" {
-		u.status = "agent is working — wait for it to finish"
-		return "", false
+	if busy(status) {
+		u.status = "agent is " + status + " — wait for it to finish"
+		return false
 	}
-	return pane, true
+	return true
 }
 
 var rangeMenu = []string{"summarise & continue", "summarise & fold", "cut"}
@@ -283,8 +308,7 @@ func (u uiModel) placeChosen(idx int) (tea.Model, tea.Cmd) {
 		u.pendingBusy = "folding back…"
 		return u, nil
 	}
-	pane, ok := u.liveCheck(at.SessionID)
-	if !ok {
+	if !u.liveCheck(at.SessionID) {
 		return u, nil
 	}
 	sp, err := u.a.Widen(src, at.Node.ID, at.Node.ID)
@@ -296,7 +320,7 @@ func (u uiModel) placeChosen(idx int) (tea.Model, tea.Cmd) {
 	// knowledge arriving, whatever session the summary came from.
 	seed := foldBackSeed(at, sum, false)
 	op := editOp{src: src, edit: adapter.Edit{After: at.Node.ID, Seed: seed}, kind: store.KindInserted,
-		pane: pane, dst: u.dstCWD(at), title: "⤶ " + title(sum.Text, 40)}
+		dst: u.dstCWD(at), title: "⤶ " + title(sum.Text, 40)}
 	u.confirm = fmt.Sprintf("Insert the summary after turn %d:  %q\n\nEverything after it is kept. Costs nothing.\n%s\n\n[enter] insert   [esc] back", sp.Last, at.Node.Title, replacesLine)
 	u.pending, u.pendingBusy = editCmd(u.a, u.st, op, u.live), "inserting…"
 	return u, nil

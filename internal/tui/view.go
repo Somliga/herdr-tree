@@ -236,9 +236,12 @@ func (u *uiModel) rebuild() {
 	was := u.m.Selected()
 	// Editing the session you are in keeps showing its line (§6.3). Only the
 	// view follows the replacement: messages still go to u.current's agent.
+	// A replacement not on disk is not on screen either: keep the current.
 	scope := u.current
 	if u.st != nil {
-		scope = u.st.Resolve(u.current)
+		if r := u.st.Resolve(u.current); ScopeTo(u.roots, r) != nil {
+			scope = r
+		}
 	}
 	roots := u.roots
 	if !u.scopeAll {

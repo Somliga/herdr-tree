@@ -45,8 +45,9 @@ func main() {
 			}
 		}
 		// ponytail: windows of one to three turns, plus one insert per turn,
-		// not every range. O(turns) splices per session keeps it to seconds;
-		// widen the window if a failure ever hides in longer ranges.
+		// not every range. O(turns) splices per session, still about half an
+		// hour over a full corpus; widen the window if a failure ever hides in
+		// longer ranges.
 		for i := range prompts {
 			for w := 0; w < 3 && i+w < len(prompts); w++ {
 				for _, e := range []adapter.Edit{
@@ -203,21 +204,26 @@ func check(path string, e adapter.Edit, sourceOrphans struct{ orphanUses, orphan
 	if roots != 1 {
 		return fmt.Sprintf("%d roots", roots), nil
 	}
+	// One orphan the source did not have is BAD, however many it did have.
+	inherited := false
 	for id := range uses {
 		if !results[id] {
-			if sourceOrphans.orphanUses[id] {
-				return "inherited", nil
+			if !sourceOrphans.orphanUses[id] {
+				return "a tool_use has no tool_result", nil
 			}
-			return "a tool_use has no tool_result", nil
+			inherited = true
 		}
 	}
 	for id := range results {
 		if !uses[id] {
-			if sourceOrphans.orphanResults[id] {
-				return "inherited", nil
+			if !sourceOrphans.orphanResults[id] {
+				return "a tool_result has no tool_use", nil
 			}
-			return "a tool_result has no tool_use", nil
+			inherited = true
 		}
+	}
+	if inherited {
+		return "inherited", nil
 	}
 	return "", nil
 }

@@ -230,3 +230,36 @@ func TestWidenReportsTurnNumbersAndTheReadingEnd(t *testing.T) {
 		t.Fatalf("span %+v, want 2..3 ending a3", s)
 	}
 }
+
+// compacted.jsonl is a native /compact: the parent chain restarts at a
+// compact_boundary (parentUuid null), followed by the isCompactSummary entry,
+// which no one typed and so is preamble (§3.4).
+const compacted = "testdata/compacted.jsonl"
+
+func TestARangeBeforeANativeCompactIsNotOnTheLine(t *testing.T) {
+	t.Setenv("CLAUDE_PROJECTS_DIR", t.TempDir())
+	if _, err := Splice(compacted, adapter.Edit{From: "u1", To: "u3"}, t.TempDir()); !errors.Is(err, ErrNotOnLine) {
+		t.Fatalf("err %v, want ErrNotOnLine", err)
+	}
+}
+
+func TestCompactingEveryTurnAfterANativeCompactKeepsTheBoundary(t *testing.T) {
+	_, by, order := spliced(t, compacted, adapter.Edit{From: "u3", To: "a4", Seed: seedText})
+	seed := seedOf(t, by)
+	if want := "cb,cs," + seed.UUID(); strings.Join(order, ",") != want {
+		t.Fatalf("kept %v, want %s", order, want)
+	}
+	if by["cb"].ParentUUID() != "" || parent(by["cs"]) != "cb" || parent(seed) != "cs" {
+		t.Fatalf("boundary under %q, summary under %q, seed under %q", parent(by["cb"]), parent(by["cs"]), parent(seed))
+	}
+}
+
+func TestCuttingATurnAfterANativeCompactKeepsTheBoundaryAsRoot(t *testing.T) {
+	_, by, order := spliced(t, compacted, adapter.Edit{From: "u3", To: "a3"})
+	if want := "cb,cs,u4,a4"; strings.Join(order, ",") != want {
+		t.Fatalf("kept %v, want %s", order, want)
+	}
+	if by["cb"].ParentUUID() != "" || parent(by["u4"]) != "cs" {
+		t.Fatalf("boundary under %q, u4 under %q", parent(by["cb"]), parent(by["u4"]))
+	}
+}
