@@ -196,5 +196,42 @@ func (u uiModel) openRangeMenu() (tea.Model, tea.Cmd) {
 	return u, nil
 }
 
-// placeChosen is a stub: Task 7 wires the fold-back menu (§2.5) to it.
-func (u uiModel) placeChosen(int) (tea.Model, tea.Cmd) { return u, nil }
+// placeChosen acts on the placement menu. Insert rewrites the line in place
+// and hides the old one; branch is v2's seeded graft and leaves both visible.
+func (u uiModel) placeChosen(idx int) (tea.Model, tea.Cmd) {
+	at, sum := u.pickAt, u.placing
+	u.pickAt = nil
+	src := adapter.Session{ID: at.SessionID, CWD: at.SessionCWD, Path: at.SessionPath}
+	if idx == 1 {
+		turns, entries, size, err := u.a.Preview(src, at.Node.ID)
+		if err != nil {
+			u.status = "cannot fold back here: " + err.Error()
+			return u, nil
+		}
+		u.confirm = foldBackConfirmText(at, turns, entries, size, u.dstCWD(at))
+		u.pending = foldBackCmd(u.a, u.st, at, u.dstCWD(at), sum, u.agentFor(at), u.send)
+		u.pendingBusy = "folding back…"
+		return u, nil
+	}
+	pane, ok := u.liveCheck(at.SessionID)
+	if !ok {
+		return u, nil
+	}
+	sp, err := u.a.Widen(src, at.Node.ID, at.Node.ID)
+	if err != nil {
+		u.status = "cannot insert here: " + err.Error()
+		return u, nil
+	}
+	// Nothing is removed, so nothing contracted: an insert is always marked as
+	// knowledge arriving, whatever session the summary came from.
+	seed := foldBackSeed(at, sum, false)
+	op := editOp{src: src, edit: adapter.Edit{After: at.Node.ID, Seed: seed}, kind: store.KindInserted,
+		pane: pane, dst: u.dstCWD(at), title: "⤶ " + title(sum.Text, 40)}
+	text := fmt.Sprintf("Insert the summary after turn %d:  %q\n\nEverything after it is kept. Costs nothing.\n%s", sp.Last, at.Node.Title, replacesLine)
+	if pane != "" {
+		text += "\n" + liveLine
+	}
+	u.confirm = text + "\n\n[enter] insert   [esc] back"
+	u.pending, u.pendingBusy = editCmd(u.a, u.st, op, u.live, u.closePane), "inserting…"
+	return u, nil
+}

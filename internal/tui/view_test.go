@@ -665,7 +665,7 @@ func TestPickerFoldsTheChosenSummaryInAtTheSelectedTurn(t *testing.T) {
 	if len(got.picking) != 1 || got.pickAt != got.m.Rows()[0].Node {
 		t.Fatalf("the picker did not open on the selected turn: %+v", got.pickAt)
 	}
-	if !strings.Contains(got.View(), "NEW session") {
+	if !strings.Contains(got.View(), "insert it here, or branch here") {
 		t.Fatalf("the picker does not say what enter will do:\n%s", got.View())
 	}
 
@@ -677,6 +677,9 @@ func TestPickerFoldsTheChosenSummaryInAtTheSelectedTurn(t *testing.T) {
 	if got2.picking != nil {
 		t.Fatal("the picker should close once acted on")
 	}
+	after2b, _ := got2.Update(tea.KeyMsg{Type: tea.KeyDown})
+	after2c, _ := after2b.(uiModel).Update(tea.KeyMsg{Type: tea.KeyEnter})
+	got2 = after2c.(uiModel)
 	// The same graft ⏎ on a turn confirms, plus a pane open: the same
 	// figures, from the same Preview.
 	for _, want := range []string{"1 turn(s)", "2 entries", "3 B"} {
@@ -731,7 +734,9 @@ func TestOnlyTheLiveSessionsTipIsSentTo(t *testing.T) {
 	if cmd != nil {
 		t.Fatal("the graft path must confirm first")
 	}
-	_, cmd = after2.(uiModel).Update(tea.KeyMsg{Type: tea.KeyEnter})
+	after2b, _ := after2.(uiModel).Update(tea.KeyMsg{Type: tea.KeyDown})
+	after2c, _ := after2b.(uiModel).Update(tea.KeyMsg{Type: tea.KeyEnter})
+	_, cmd = after2c.(uiModel).Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd == nil {
 		t.Fatal("want foldBackCmd once confirmed")
 	}
@@ -893,7 +898,9 @@ func TestThePickerOnlyPromisesToSendAtTheTip(t *testing.T) {
 	}
 
 	after2, _ := got.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	_, cmd := after2.(uiModel).Update(tea.KeyMsg{Type: tea.KeyEnter})
+	after2b, _ := after2.(uiModel).Update(tea.KeyMsg{Type: tea.KeyDown})
+	after2c, _ := after2b.(uiModel).Update(tea.KeyMsg{Type: tea.KeyEnter})
+	_, cmd := after2c.(uiModel).Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd == nil {
 		t.Fatal("want foldBackCmd once confirmed")
 	}

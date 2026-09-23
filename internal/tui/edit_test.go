@@ -251,3 +251,62 @@ func TestNoEditStatusCarriesTheSeed(t *testing.T) {
 		t.Fatalf("status leaked the summary: %q", msg.status)
 	}
 }
+
+func pickUI(t *testing.T, fa *fakeAdapter, h *herdrLog) uiModel {
+	t.Helper()
+	st := loadedStore(t)
+	st.AddSummary(store.Summary{Text: "what the branch found", SessionID: "other", FromTurn: "a", ToTurn: "b"})
+	u := uiModel{m: New(session("s", "t1", "t2", "t3")), a: fa, st: st, repoRoot: "/repo",
+		live: h.live, closePane: h.close}
+	u.m.Cursor = 0
+	u, _ = press(t, u, key('p'), enter)
+	return u
+}
+
+func TestPickingASummaryAwayFromTheLiveTipOffersInsertOrBranch(t *testing.T) {
+	u := pickUI(t, &fakeAdapter{}, &herdrLog{})
+	if u.menu != "place" {
+		t.Fatalf("menu %q, want place", u.menu)
+	}
+	for _, want := range []string{"insert here", "branch here"} {
+		if !strings.Contains(u.View(), want) {
+			t.Fatalf("placement menu lacks %q:\n%s", want, u.View())
+		}
+	}
+}
+
+func TestInsertSplicesTheSummaryInAndKeepsWhatFollows(t *testing.T) {
+	fa := &fakeAdapter{span: adapter.Span{First: 1, Last: 1}}
+	u, cmd := press(t, pickUI(t, fa, &herdrLog{}), enter)
+	if cmd != nil || !strings.Contains(u.confirm, "Everything after it is kept") {
+		t.Fatalf("insert must confirm first:\n%s", u.confirm)
+	}
+	_, cmd = press(t, u, enter)
+	cmd()
+	if len(fa.spliced) != 1 {
+		t.Fatalf("spliced %+v", fa.spliced)
+	}
+	e := fa.spliced[0]
+	if e.After != "t1" || e.From != "" || !strings.HasPrefix(e.Seed, claudeSummaryPrefix) {
+		t.Fatalf("edit %+v, want an insert after t1 seeded with the summary", e)
+	}
+	if u.st.Branches["spliced-sid"].Kind != store.KindInserted {
+		t.Fatal("the new record is not marked inserted")
+	}
+}
+
+func TestBranchHereIsTodaysFoldBack(t *testing.T) {
+	fa := &fakeAdapter{}
+	u, _ := press(t, pickUI(t, fa, &herdrLog{}), down, enter)
+	if !strings.Contains(u.confirm, "NEW session") {
+		t.Fatalf("branch here should raise the v2 fold-back confirmation:\n%s", u.confirm)
+	}
+	_, cmd := press(t, u, enter)
+	cmd()
+	if fa.seededWith == "" || len(fa.spliced) != 0 {
+		t.Fatal("branch here must graft, not splice")
+	}
+	if fa.focused {
+		t.Fatal("a branch opens beside the user, unfocused")
+	}
+}

@@ -217,6 +217,7 @@ type uiModel struct {
 	picking []store.Summary
 	pickIdx int
 	pickAt  *tree.Node
+	placing store.Summary // the summary chosen in the picker, while the placement menu is open
 
 	labelling *tree.Node // non-nil while typing a label
 	labelText string
@@ -509,7 +510,7 @@ func (u uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			case "enter":
 				sum, at := u.picking[u.pickIdx], u.pickAt
-				u.picking, u.pickAt, u.pickIdx = nil, nil, 0
+				u.picking, u.pickIdx = nil, 0
 				agent := u.agentFor(at)
 				if agent != "" && at.IsSessionLeaf && u.send != nil {
 					// Nothing is copied and nothing is written: the summary
@@ -517,18 +518,8 @@ func (u uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					u.busy = "sending…"
 					return u, foldBackCmd(u.a, u.st, at, u.dstCWD(at), sum, agent, u.send)
 				}
-				// The other path is the same graft ⏎ on a turn confirms,
-				// plus a pane open, and on a long transcript it is the more
-				// expensive of the two. It gets the same figures first.
-				src := adapter.Session{ID: at.SessionID, CWD: at.SessionCWD, Path: at.SessionPath}
-				turns, entries, size, err := u.a.Preview(src, at.Node.ID)
-				if err != nil {
-					u.status = "cannot fold back here: " + err.Error()
-					return u, nil
-				}
-				u.confirm = foldBackConfirmText(at, turns, entries, size, u.dstCWD(at))
-				u.pending = foldBackCmd(u.a, u.st, at, u.dstCWD(at), sum, agent, u.send)
-				u.pendingBusy = "folding back…"
+				u.placing, u.pickAt = sum, at
+				u.menu, u.menuIdx = "place", 0
 				return u, nil
 			case "esc", "q":
 				u.picking, u.pickAt, u.pickIdx = nil, nil, 0
@@ -560,6 +551,9 @@ func (u uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return u.placeChosen(idx)
 			case "esc", "q":
+				if u.menu == "place" {
+					u.pickAt = nil
+				}
 				u.menu, u.menuIdx = "", 0
 			}
 			return u, nil
@@ -691,7 +685,7 @@ func (u uiModel) pickerView() string {
 	if agent := u.agentFor(u.pickAt); agent != "" && u.pickAt.IsSessionLeaf && u.send != nil {
 		fmt.Fprintf(&b, "Sends it to %s as your next message. Nothing is copied.\n", agent)
 	} else {
-		b.WriteString("Starts a NEW session that rewinds to this turn and carries the summary.\n")
+		b.WriteString("Next: insert it here, or branch here.\n")
 	}
 	b.WriteString("\n↑↓ choose   [enter] fold back   [esc] cancel\n")
 	return b.String()
