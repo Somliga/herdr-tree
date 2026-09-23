@@ -25,9 +25,14 @@ type Node struct {
 	Grafted       bool // this node starts a session branched from its parent
 	Broken        bool // session present but unreadable or empty
 	FromRemoved   bool // a branch whose turn was removed from the line it left
-	CutHere       int  // turns dropped immediately before this entry
-	CutAfter      int  // turns dropped after this entry, which ends its line
-	Label         string
+	// Superseded marks a node copied verbatim from the line a grafted session
+	// left, up to its graft point: the parent already shows this turn, so
+	// this copy of it renders no row (see attachPoint). Its children are
+	// still walked, exactly like a filtered-out node.
+	Superseded bool
+	CutHere    int // turns dropped immediately before this entry
+	CutAfter   int // turns dropped after this entry, which ends its line
+	Label      string
 	// IsHead marks a section head: a human prompt, or the first entry of a
 	// session that does not start with one. Everything until the next head is
 	// that section's body.
@@ -35,11 +40,40 @@ type Node struct {
 	Children []*Node
 }
 
+// attachPoint finds where a grafted child's own line begins. A grafted
+// session carries copies of every turn up to its graft point under the same
+// ids as the line it left (§5.3b); the first node whose id is NOT also in the
+// parent line is where the branch actually diverges, and it becomes the row
+// that carries "↳ <session>" and the branch's session-root marker. Every
+// node up to it is marked Superseded, so it renders no row of its own but its
+// children (the rest of the child's own chain) are still walked normally —
+// the same treatment Rows() already gives a filtered-out node.
+//
+// If nothing in the chain is new, the last node (the copy of the graft point
+// itself) is kept as the one visible row, so the branch stays reachable.
+// Returns nil only when the chain is empty (a broken session).
+func attachPoint(chain []*Node, parentNodes map[string]*Node) *Node {
+	for _, n := range chain {
+		if _, copied := parentNodes[n.Node.ID]; !copied {
+			return n
+		}
+		n.Superseded = true
+		n.IsSessionRoot = false
+	}
+	if len(chain) == 0 {
+		return nil
+	}
+	last := chain[len(chain)-1]
+	last.Superseded = false
+	return last
+}
+
 // Build turns sessions plus graft edges into roots. A session is a chain;
 // a graft edge nests one chain under a turn of another.
 func Build(sessions []adapter.Session, s *store.Store) []*Node {
-	chains := make(map[string]*Node, len(sessions)) // session id -> its first node
-	nodeIndex := make(map[string]map[string]*Node)  // session id -> turn id -> node
+	chains := make(map[string]*Node, len(sessions))  // session id -> its first node
+	nodeIndex := make(map[string]map[string]*Node)   // session id -> turn id -> node
+	order := make(map[string][]*Node, len(sessions)) // session id -> its nodes, in turn order
 
 	// A replaced session is hidden, but only when what replaced it is here
 	// to take its place: a missing replacement must not take the
@@ -80,6 +114,7 @@ func Build(sessions []adapter.Session, s *store.Store) []*Node {
 			}
 			n.Label = s.Labels[store.LabelKey(sess.ID, t.ID)]
 			nodeIndex[sess.ID][t.ID] = n
+			order[sess.ID] = append(order[sess.ID], n)
 
 			isHead := t.Kind == adapter.KindHuman || head == nil
 			switch {
@@ -155,7 +190,12 @@ func Build(sessions []adapter.Session, s *store.Store) []*Node {
 			child.FromRemoved = resolved != from
 			continue
 		}
-		child.Grafted = true
+		start := attachPoint(order[childSID], parentNodes)
+		if start == nil {
+			start = child
+		}
+		start.Grafted = true
+		start.IsSessionRoot = true
 		parent.Children = append(parent.Children, child)
 		attached[childSID] = true
 	}

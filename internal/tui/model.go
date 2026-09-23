@@ -161,6 +161,9 @@ func (m *Model) CycleFilter() {
 }
 
 func (m *Model) shows(n *tree.Node) bool {
+	if n.Superseded {
+		return false // a branch's copy of a turn its parent already shows
+	}
 	if n.IsSessionRoot {
 		return true
 	}

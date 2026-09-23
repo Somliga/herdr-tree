@@ -323,6 +323,182 @@ func TestABranchOffARemovedTurnBecomesAMarkedRoot(t *testing.T) {
 	t.Fatal("the orphaned branch is not a root")
 }
 
+// TestABranchRendersFromWhereItDiverges is the user's own tree (§5.3b): a
+// branch grafted mid-line carries copies of every turn up to its graft
+// point under the same ids, and those copies must not render a second time.
+func TestABranchRendersFromWhereItDiverges(t *testing.T) {
+	st := emptyStore()
+	st.Add("branch", store.Branch{GraftedFrom: store.From{SessionID: "trunk", Node: "BITTEREND"}})
+	roots := Build([]adapter.Session{
+		sess("trunk", "hello", "BING", "BITTEREND", "FAN", "BULLDOG"),
+		sess("branch", "hello", "BING", "BITTEREND", "TRIPPLEDIP", "HORSE"),
+	}, st)
+
+	if len(roots) != 1 {
+		t.Fatalf("the branch must not be a root: %d roots", len(roots))
+	}
+
+	byID := map[string]*Node{}
+	var walk func(n *Node)
+	walk = func(n *Node) {
+		if n.SessionID == "branch" {
+			byID[n.Node.ID] = n
+		}
+		for _, c := range n.Children {
+			walk(c)
+		}
+	}
+	for _, r := range roots {
+		walk(r)
+	}
+
+	for _, id := range []string{"hello", "BING", "BITTEREND"} {
+		n, ok := byID[id]
+		if !ok {
+			t.Fatalf("the branch's copy of %s must still be reachable (for further grafts), got none", id)
+		}
+		if !n.Superseded {
+			t.Fatalf("the branch's copy of %s must be marked Superseded, got %+v", id, n)
+		}
+		if n.IsSessionRoot {
+			t.Fatalf("the branch's copy of %s must not carry the session-root marker", id)
+		}
+	}
+
+	start, ok := byID["TRIPPLEDIP"]
+	if !ok {
+		t.Fatal("TRIPPLEDIP missing from the branch")
+	}
+	if !start.Grafted || !start.IsSessionRoot {
+		t.Fatalf("TRIPPLEDIP must be the branch's rendered start: %+v", start)
+	}
+	if start.Superseded {
+		t.Fatal("TRIPPLEDIP is new; it must not be Superseded")
+	}
+
+	horse, ok := byID["HORSE"]
+	if !ok {
+		t.Fatal("HORSE missing from the branch")
+	}
+	if horse.Superseded || horse.IsSessionRoot || horse.Grafted {
+		t.Fatalf("HORSE is an ordinary later turn: %+v", horse)
+	}
+	if len(start.Children) != 1 || start.Children[0] != horse {
+		t.Fatalf("HORSE must hang off TRIPPLEDIP: %+v", start.Children)
+	}
+
+	// TRIPPLEDIP must actually be attached under the trunk's BITTEREND, not
+	// under the branch's own (superseded) copy of it.
+	var trunkBittEREnd *Node
+	walk = func(n *Node) {
+		if n.SessionID == "trunk" && n.Node.ID == "BITTEREND" {
+			trunkBittEREnd = n
+		}
+		for _, c := range n.Children {
+			walk(c)
+		}
+	}
+	for _, r := range roots {
+		walk(r)
+	}
+	found := false
+	var descends func(n *Node) bool
+	descends = func(n *Node) bool {
+		if n == start {
+			return true
+		}
+		for _, c := range n.Children {
+			if descends(c) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, c := range trunkBittEREnd.Children {
+		if descends(c) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("TRIPPLEDIP must hang (directly or via superseded copies) off the trunk's BITTEREND, children: %+v", trunkBittEREnd.Children)
+	}
+}
+
+// TestABranchWithNothingOfItsOwnKeepsOneRow covers §5.3b's other case: a
+// branch that is only the copied prefix (opened, nothing typed yet) must
+// still show one row, so it stays reachable and enter-able.
+func TestABranchWithNothingOfItsOwnKeepsOneRow(t *testing.T) {
+	st := emptyStore()
+	st.Add("branch", store.Branch{GraftedFrom: store.From{SessionID: "trunk", Node: "BITTEREND"}})
+	roots := Build([]adapter.Session{
+		sess("trunk", "hello", "BING", "BITTEREND"),
+		sess("branch", "hello", "BING", "BITTEREND"),
+	}, st)
+
+	var visible []*Node
+	var walk func(n *Node)
+	walk = func(n *Node) {
+		if n.SessionID == "branch" && !n.Superseded {
+			visible = append(visible, n)
+		}
+		for _, c := range n.Children {
+			walk(c)
+		}
+	}
+	for _, r := range roots {
+		walk(r)
+	}
+	if len(visible) != 1 {
+		t.Fatalf("want exactly one visible row for the branch, got %d: %+v", len(visible), visible)
+	}
+	n := visible[0]
+	if n.Node.ID != "BITTEREND" || !n.Grafted || !n.IsSessionRoot {
+		t.Fatalf("the one row must be the copy of the graft point, marked Grafted+IsSessionRoot: %+v", n)
+	}
+}
+
+// TestABranchDedupesAgainstAReplacementLine covers §5.3b combined with §5.3:
+// a branch grafted off a line that was since spliced re-attaches to the
+// replacement (via Resolve) and must still dedupe against ITS ids.
+func TestABranchDedupesAgainstAReplacementLine(t *testing.T) {
+	st := &store.Store{Branches: map[string]store.Branch{
+		"branch": {GraftedFrom: store.From{SessionID: "old", Node: "t3"}},
+	}}
+	st.Replace("old", "new", store.Branch{Kind: store.KindCompacted})
+	roots := Build([]adapter.Session{
+		sess("new", "t1", "seed", "t3"),
+		sess("old", "t1", "t2", "t3"),
+		sess("branch", "t1", "t3", "t5"),
+	}, st)
+
+	byID := map[string]*Node{}
+	var walk func(n *Node)
+	walk = func(n *Node) {
+		if n.SessionID == "branch" {
+			byID[n.Node.ID] = n
+		}
+		for _, c := range n.Children {
+			walk(c)
+		}
+	}
+	for _, r := range roots {
+		walk(r)
+	}
+
+	t1 := byID["t1"]
+	if t1 == nil || !t1.Superseded {
+		t.Fatalf("branch's t1 must dedupe against the replacement's t1, got %+v", t1)
+	}
+	t3 := byID["t3"]
+	if t3 == nil || !t3.Superseded {
+		t.Fatalf("branch's t3 (the graft point) must dedupe against the replacement's t3, got %+v", t3)
+	}
+	t5 := byID["t5"]
+	if t5 == nil || !t5.Grafted || !t5.IsSessionRoot {
+		t.Fatalf("t5 (new) must be the branch's rendered start: %+v", t5)
+	}
+}
+
 func TestTheCutMarkerSitsWhereTheCutWas(t *testing.T) {
 	st := &store.Store{Branches: map[string]store.Branch{}}
 	st.Replace("old", "new", store.Branch{Kind: store.KindCut, Cut: &store.Cut{Turns: 2, At: "t4"}})

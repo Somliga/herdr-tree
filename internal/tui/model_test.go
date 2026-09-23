@@ -1,8 +1,8 @@
 package tui
 
 import (
-	"strings"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -258,6 +258,39 @@ func TestScopeToReturnsOnlyTheNamedSessionPlusItsGraftedChildren(t *testing.T) {
 		if !want[id] {
 			t.Fatalf("unexpected node %q in scoped view (s3 must not leak in): %v", id, got)
 		}
+	}
+}
+
+// TestScopeToFindsABranchThatRendersFromWhereItDiverges guards tree.Build's
+// dedup (§5.3b): the branch's own session-root marker moves off its copied
+// prefix onto its first new turn, and ScopeTo must still find it there.
+func TestScopeToFindsABranchThatRendersFromWhereItDiverges(t *testing.T) {
+	mkSess := func(id string, ids ...string) adapter.Session {
+		s := adapter.Session{ID: id, Title: "t-" + id, Updated: time.Now()}
+		for _, n := range ids {
+			s.Nodes = append(s.Nodes, adapter.Node{ID: n, Title: "turn " + n, Kind: adapter.KindHuman})
+		}
+		return s
+	}
+	st := &store.Store{Version: 1, Branches: map[string]store.Branch{
+		"branch": {GraftedFrom: store.From{SessionID: "trunk", Node: "BITTEREND"}},
+	}}
+	roots := tree.Build([]adapter.Session{
+		mkSess("trunk", "hello", "BING", "BITTEREND", "FAN"),
+		mkSess("branch", "hello", "BING", "BITTEREND", "TRIPPLEDIP"),
+	}, st)
+
+	scoped := ScopeTo(roots, "branch")
+	if len(scoped) != 1 {
+		t.Fatalf("ScopeTo must still find the branch, got %+v", scoped)
+	}
+	if scoped[0].Node.ID != "TRIPPLEDIP" {
+		t.Fatalf("ScopeTo must land on the branch's own first turn, got %+v", scoped[0])
+	}
+	m := New(scoped)
+	got := ids(m.Rows())
+	if len(got) != 1 || got[0] != "TRIPPLEDIP" {
+		t.Fatalf("scoped rows should show only the branch's own turn(s), got %v", got)
 	}
 }
 
