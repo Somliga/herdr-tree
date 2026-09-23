@@ -1,7 +1,8 @@
 # herdr-tree — context editing
 
 Date: 2026-09-23
-Status: draft for review
+Status: approved; amended 2026-09-23 after the first manual run (§2.2, §2.3,
+§2.5, §4, §6): three range options, and no edit ever opens a pane by itself
 Scope: v3. Builds on the timeline spec (`2026-09-22-timeline-design.md`),
 which stands unchanged except where noted in §9.
 
@@ -55,11 +56,17 @@ footer reads `s select` rather than `s summarise`.
 With a range fixed, `⏎` opens a menu over it:
 
 ```
-summarise & compact · cut · esc back
+summarise & continue · summarise & fold · cut · esc back
 ```
 
-Only those two options exist. The menu is the place later range operations
-go; none is designed here.
+- **summarise & continue** — the range is replaced by its summary in its own
+  line (a compaction).
+- **summarise & fold** — the range is summarised and its own line is left
+  untouched; the user then chooses where to fold the summary in (§2.7).
+- **cut** — the range is removed.
+
+**No edit opens a pane.** Every edit only writes; the tree reloads with the
+cursor on the result, and moving there is the user's own `⏎` (§6).
 
 ### 2.3 One confirmation
 
@@ -67,15 +74,14 @@ Choosing an option opens one dialog that states everything the operation will
 do. Nothing asks again afterwards; after `⏎` the operation runs to completion
 or stops at the first failure (§6).
 
-- **summarise & compact**: v2's cost text ("the model reads this session up to
-  the end of the range … that whole prefix is billed"), then:
+- **summarise & continue**: v2's cost text ("the model reads this session up
+  to the end of the range … that whole prefix is billed"), then:
   `Then: turns <a>–<b> are replaced by the summary · a new session replaces
   this line in the tree (the old one is hidden, kept on disk)`.
+- **summarise & fold**: the same cost text, then `Then: you choose where to fold
+  it in. Nothing is written to this line.`
 - **cut**: `Removes turns <a>–<b>. Costs nothing. No note is left in the
   conversation.` plus the same replacement line.
-- If the session is open in a live pane, both add: `The pane running this
-  session is closed and the new one opens. Text typed but not sent in that
-  pane is lost.`
 
 The turns named are the range **after widening** (§3.1), so the user sees
 exactly what goes.
@@ -86,7 +92,8 @@ Each refusal is a status line with its reason. The range stays fixed so it can
 be adjusted.
 
 - The range crosses sessions (v2, unchanged).
-- The session's live agent is `working` (§6.1).
+- The session's live agent is `working` (§6.1) — continue and cut only; fold
+  writes nothing to the source line.
 - A cut would remove every turn.
 - The range is not on the chain up to the session's tip (§3.3).
 
@@ -98,9 +105,10 @@ After a summary is picked:
   summary is delivered as a message. No menu.
 - **Anywhere else**, a two-option menu:
   - **insert here** — splice with an empty range after this turn, seeded with
-    the summary. Replaces the line (§5).
+    the summary. Replaces the line (§5). Opens nothing.
   - **branch here** — v2's seeded graft: a new line that ends at this turn plus
-    the summary. The old line stays visible. Unchanged.
+    the summary. The old line stays visible. Opens nothing (v2 opened a pane;
+    the user now presses `⏎` on it).
 
 Inserting far back in a long line gives the model a history in which later
 turns follow a summary they were written without. That is usually harmless and
@@ -111,9 +119,17 @@ insert, and `s` → cut covers it.
 
 ### 2.6 The summary is still stored
 
-summarise & compact stores its summary exactly as v2 does, so `p` can fold the
-same summary into another line later. Summarising for later use elsewhere
-stays possible.
+Both summarise options store the summary exactly as v2 does, so `p` can fold
+the same summary into another line later.
+
+### 2.7 Fold mode
+
+After **summarise & fold**'s summary arrives, the overlay stays open in fold
+mode, status `summary ready — move to a turn and press ⏎ to fold it in · esc
+keeps it for later (p)`. `⏎` on a turn does exactly what choosing that
+summary in `p`'s picker does (§2.5): delivered as a message at the live tip,
+the insert/branch menu anywhere else. `esc` leaves fold mode; the summary stays
+stored.
 
 ## 3. The splice
 
@@ -181,15 +197,18 @@ Claude Code's own `/compact` writes a `compact_boundary` where the parent chain
 restarts. Splice follows `parentUuid` as graft does, so it sees only the line
 after the last boundary — the same line the tree shows.
 
-## 4. Summarise & compact, end to end
+## 4. Summarise & continue, end to end
 
 1. Confirm (§2.3), with the busy check (§6.1).
 2. `adapter.Summarise` over the widened range — unchanged from v2, billed.
 3. Store the summary (§2.6).
 4. Busy re-check (§6.1, step 3).
-5. Splice with the compaction seed, then §5 and §6.
+5. Splice with the compaction seed, save (§5), reload the tree with the cursor
+   on the new line's tip. Nothing is opened (§6).
 
-If the summary call fails, nothing is written, hidden or closed.
+If the summary call fails, nothing is written or hidden.
+
+summarise & fold is steps 1–3 (without the busy check), then fold mode (§2.7).
 
 ## 5. Store and tree
 
@@ -245,46 +264,51 @@ Stored edges are never rewritten; resolution happens when the tree is built.
 
 ## 6. Live handover
 
-Only when a live Herdr pane is running the session being spliced.
+An edit never opens or closes a pane. The handover happens when the user moves.
 
-### 6.1 Order
+### 6.1 The edit
 
-Each step runs only if the one before succeeded.
-
-1. **At confirm**: resolve the session's live agent and its `agent_status`.
-   `parseAgentList` keeps `agent_status` alongside the pane id. If `working`,
-   refuse (§2.4); nothing is written.
-2. (compact only) Summarise.
-3. **Re-check `agent_status` immediately before splicing.** The user may have
-   typed into the old pane during the summary call. If `working`: write
+1. **At confirm**: resolve the session's live agent and its `agent_status`
+   (`parseAgentList` keeps it alongside the pane id). If `working`, refuse
+   (§2.4); nothing is written.
+2. (continue only) Summarise.
+3. **Re-check `agent_status` immediately before splicing.** If `working`: write
    nothing, status `summary stored — agent is busy; select again or use p`.
-4. Splice.
-5. Save the store (`replaced_by`, new record). From here the tree is correct
-   whatever fails next.
-6. Open the new session: `Resume`, with the split made **with focus** (no
-   `--no-focus`) for this path only. Branching and plain resume keep
-   `--no-focus`.
-7. Close the old pane: `herdr pane close <pane_id>` — only if step 6
-   succeeded. If step 6 failed, the old pane is left running, so the user is
-   never left with no pane.
+4. Splice, save the store, reload with the cursor on the new line's tip.
 
-`herdr pane close` has no guard of its own; step 1 and step 3 are the guard.
-Text typed but not sent in the old pane cannot be detected and is lost; the
-confirmation says so (§2.3).
+A pane that was running the old line keeps running it. Anything typed there
+lands on the hidden line; the status says `⏎ on it to continue there`.
 
-### 6.2 Not live
+### 6.2 `⏎` on a replacement
 
-A session with no live pane is spliced and the store saved (steps 4–5). Nothing
-is opened; the user presses `⏎` on the new line when they want to continue it.
+`⏎` on the tip of a line walks its `replaces` chain (a line edited several
+times without moving) for a session still open in a pane.
 
-### 6.3 Status lines
+- None found: plain resume, as today.
+- Found, and its agent is `working`: refused — closing it would kill the
+  running turn.
+- Found: confirm `Continue on the new line. The pane running the old line is
+  closed; text typed but not sent there is lost.` Then open the new session
+  **with focus**, and close the old pane only if the open succeeded. If the
+  open failed, the old pane is left running.
 
-Each says what did happen, following v2's fold-back:
+`herdr pane close` has no guard of its own; the status check is the guard.
+Branching and plain resume keep `--no-focus`.
 
-- `compacted into <id> — opened in a new pane, old pane closed`
-- `compacted into <id>, but it did not open — old pane left running`
-- `compacted into <id> and opened, but the old pane did not close: <err>`
-- `cut 8 turns from <id> → <new id>` (not live)
+### 6.3 Scope follows the replacement
+
+The tree's scope and trunk are computed from `Resolve(current)`, so editing the
+session you are in keeps showing its line. Sending a message (the live-tip
+fold) still targets only the agent actually running, never a resolved session.
+
+### 6.4 Status lines
+
+Each says what did happen:
+
+- `compacted 1a2b3c4d → 5e6f7a8b — ⏎ on it to continue there`
+- `cut 8 turns from 1a2b3c4d → 5e6f7a8b — ⏎ on it to continue there`
+- `opened 5e6f7a8b, but the old pane did not close: <err>`
+- `could not open 5e6f7a8b — old pane left running: <err>`
 
 Errors are passed through `scrubbed` as today; no message content reaches a
 status line.
