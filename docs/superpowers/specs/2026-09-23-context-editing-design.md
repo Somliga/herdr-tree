@@ -178,8 +178,8 @@ The source transcript is never modified.
 6. `sessionId`/`session_id` and `cwd` are rewritten as in `GraftSeeded`.
    **Entry uuids are kept.** Branch re-attachment (§5.3) depends on it.
 
-Seeds: compact uses `CompactionPrefix` (`⤶ compacted <from>..<to>`), insert
-uses `SummaryPrefix` or `CompactionPrefix` by v2's `foldBackSeed` rule. The
+Seeds: compact uses `CompactionPrefix` (`⤶ compacted <from>..<to>`); insert
+always uses `SummaryPrefix` — nothing was removed, so nothing contracted (§6b). The
 existing `ErrUnmarkedSeed` check applies.
 
 ### 3.3 Refused, nothing written
