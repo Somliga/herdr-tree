@@ -254,6 +254,17 @@ func TestInsertSplicesTheSummaryInAndKeepsWhatFollows(t *testing.T) {
 	}
 }
 
+// p places a summary that already exists: its failure says nothing about one
+// being kept.
+func TestAFailedPlacementByPSaysNothingAboutAStoredSummary(t *testing.T) {
+	fa := &fakeAdapter{seedErr: errors.New("graft refused")}
+	u, _ := press(t, pickUI(t, fa, &herdrLog{}), down, enter)
+	_, cmd := press(t, u, enter)
+	if msg := cmd().(actionDoneMsg); msg.status != "branch failed: graft refused" {
+		t.Fatalf("status %q", msg.status)
+	}
+}
+
 func TestBranchHereIsTodaysFoldBack(t *testing.T) {
 	fa := &fakeAdapter{}
 	u, _ := press(t, pickUI(t, fa, &herdrLog{}), down, enter)
@@ -468,7 +479,7 @@ func TestAFailedFoldCutsNothing(t *testing.T) {
 	u, _ := press(t, at(t, moveUI(t, fa, &herdrLog{}), "o1"), enter, down, enter)
 	_, cmd := press(t, u, enter)
 	msg := cmd().(actionDoneMsg)
-	if got := strings.Join(fa.writes, ","); got != "summarise s,graft o" || msg.status != "branch failed: graft refused" {
+	if got := strings.Join(fa.writes, ","); got != "summarise s,graft o" || msg.status != "summary stored — branch failed: graft refused" {
 		t.Fatalf("writes %s status %q", got, msg.status)
 	}
 
@@ -476,7 +487,7 @@ func TestAFailedFoldCutsNothing(t *testing.T) {
 	u, _ = press(t, at(t, moveUI(t, fa, &herdrLog{}), "o1"), enter, enter)
 	_, cmd = press(t, u, enter)
 	msg = cmd().(actionDoneMsg)
-	if got := strings.Join(fa.writes, ","); got != "summarise s,splice o" || msg.status != "merged failed: disk full" {
+	if got := strings.Join(fa.writes, ","); got != "summarise s,splice o" || msg.status != "summary stored — merged failed: disk full" {
 		t.Fatalf("writes %s status %q", got, msg.status)
 	}
 }
@@ -549,12 +560,12 @@ func TestABusySourceAtConfirmPaysForNothing(t *testing.T) {
 func TestEscCancelsTheMoveAndPNeverCuts(t *testing.T) {
 	fa := &fakeAdapter{}
 	u, _ := press(t, at(t, moveUI(t, fa, &herdrLog{}), "o1"), enter, esc)
-	if u.menu != "" || u.folding != nil {
-		t.Fatalf("esc on the place menu kept the move: menu %q", u.menu)
+	if u.menu != "" || u.folding != nil || u.status != "squash into… cancelled — nothing was paid or written" {
+		t.Fatalf("esc on the place menu kept the move: menu %q status %q", u.menu, u.status)
 	}
 	u, _ = press(t, at(t, moveUI(t, fa, &herdrLog{}), "o1"), enter, enter, esc)
-	if u.confirm != "" || u.folding != nil {
-		t.Fatal("esc on the confirmation kept the move")
+	if u.confirm != "" || u.folding != nil || u.status != "squash into… cancelled — nothing was paid or written" {
+		t.Fatalf("esc on the confirmation kept the move: status %q", u.status)
 	}
 	if fa.summarisedFrom != "" || len(fa.writes) != 0 || len(u.st.AllSummaries()) != 0 {
 		t.Fatalf("a cancelled move paid or wrote: %v", fa.writes)

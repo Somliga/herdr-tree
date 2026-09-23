@@ -583,6 +583,7 @@ func (u uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "esc", "q":
 				// The range survives: escaping the cost dialog is how you go
 				// back and move the range's start, not how you abandon it.
+				// Target mode's confirmation instead cancels the move (§2.7).
 				u.confirm, u.pending, u.pendingBusy = "", nil, ""
 				u = u.cancelMove()
 			}

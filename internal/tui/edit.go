@@ -104,8 +104,10 @@ func cutAfter(fold tea.Cmd, a adapter.Adapter, st *store.Store, mv foldMove, tar
 	return func() tea.Msg {
 		msg := fold().(actionDoneMsg)
 		// A fold reloads or quits only when it wrote and recorded; anything
-		// else is its failure, and the source stays as it is.
+		// else is its failure, and the source stays as it is. The summary was
+		// paid for and stored, so p can place it without paying again.
 		if !msg.reload && !msg.quit {
+			msg.status = "summary stored — " + msg.status
 			return msg
 		}
 		cut := editCmd(a, st, mv.cut, live)().(actionDoneMsg)
@@ -272,8 +274,8 @@ func (u uiModel) openTip(n *tree.Node) (tea.Model, tea.Cmd) {
 
 const replacesLine = "A new session replaces this line in the tree (the old one is hidden, kept on disk)."
 
-// kindFold names squash into… in editConfirm. It is not a store kind:
-// fold writes nothing to the line it summarises.
+// kindFold names squash into… in editConfirm. It is not a store kind: the
+// move writes a merge or branch at its target and a drop (KindCut) here.
 const kindFold = "fold"
 
 // editConfirm raises the one confirmation for a range option (§2.3), or for
