@@ -5,6 +5,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -22,15 +23,21 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+	// ponytail: defer doesn't cover interrupted processes; leftover -splicecheck dirs must be rmdir'd
 	defer os.RemoveAll(tmp)
 	os.Setenv("CLAUDE_PROJECTS_DIR", tmp) // Splice writes here, never into src
 
-	var tried, ok, refused, bad int
+	var tried, ok, inherited, bad int
+	var refusedNotOnLine, refusedNothingLeft, refusedVersion, refusedPartial, refusedUnmarked, refusedOther int
+
 	for _, p := range paths {
 		es, skipped, err := claude.ParseFile(p)
 		if err != nil || skipped > 0 {
 			continue
 		}
+		orphanUses, orphanResults := getSourceOrphans(es)
+		sourceOrphans := struct{ orphanUses, orphanResults map[string]bool }{orphanUses, orphanResults}
+
 		var prompts []string
 		for _, e := range es {
 			if claude.IsPrompt(e) {
@@ -47,11 +54,14 @@ func main() {
 					{From: prompts[i], To: prompts[i+w], Seed: claude.CompactionPrefix + " check"},
 				} {
 					tried++
-					switch r := check(p, e); r {
+					r, refusReason := check(p, e, sourceOrphans)
+					switch r {
 					case "":
 						ok++
 					case "refused":
-						refused++
+						recordRefusal(refusReason, &refusedNotOnLine, &refusedNothingLeft, &refusedVersion, &refusedPartial, &refusedUnmarked, &refusedOther)
+					case "inherited":
+						inherited++
 					default:
 						bad++
 						fmt.Printf("BAD %s turn %d+%d seed=%v: %s\n", shortID(p), i+1, w, e.Seed != "", r)
@@ -59,21 +69,58 @@ func main() {
 				}
 			}
 			tried++
-			switch r := check(p, adapter.Edit{After: prompts[i], Seed: claude.SummaryPrefix + " check"}); r {
+			r, refusReason := check(p, adapter.Edit{After: prompts[i], Seed: claude.SummaryPrefix + " check"}, sourceOrphans)
+			switch r {
 			case "":
 				ok++
 			case "refused":
-				refused++
+				recordRefusal(refusReason, &refusedNotOnLine, &refusedNothingLeft, &refusedVersion, &refusedPartial, &refusedUnmarked, &refusedOther)
+			case "inherited":
+				inherited++
 			default:
 				bad++
 				fmt.Printf("BAD %s insert after turn %d: %s\n", shortID(p), i+1, r)
 			}
 		}
 	}
-	fmt.Printf("sessions %d · splices %d · valid %d · refused %d · BAD %d\n", len(paths), tried, ok, refused, bad)
+	totalRefused := refusedNotOnLine + refusedNothingLeft + refusedVersion + refusedPartial + refusedUnmarked + refusedOther
+	fmt.Printf("sessions %d · splices %d · valid %d · inherited %d · refused %d (not-on-line %d, nothing-left %d, version %d, partial %d, unmarked %d, other %d) · BAD %d\n",
+		len(paths), tried, ok, inherited, totalRefused, refusedNotOnLine, refusedNothingLeft, refusedVersion, refusedPartial, refusedUnmarked, refusedOther, bad)
 	if bad > 0 {
 		os.Exit(1)
 	}
+}
+
+func getSourceOrphans(es []claude.Entry) (orphanUses, orphanResults map[string]bool) {
+	orphanUses = map[string]bool{}
+	orphanResults = map[string]bool{}
+	uses, results := map[string]bool{}, map[string]bool{}
+	for _, en := range es {
+		msg, _ := en.Raw["message"].(map[string]any)
+		blocks, _ := msg["content"].([]any)
+		for _, b := range blocks {
+			bm, _ := b.(map[string]any)
+			switch bm["type"] {
+			case "tool_use":
+				id, _ := bm["id"].(string)
+				uses[id] = true
+			case "tool_result":
+				id, _ := bm["tool_use_id"].(string)
+				results[id] = true
+			}
+		}
+	}
+	for id := range uses {
+		if !results[id] {
+			orphanUses[id] = true
+		}
+	}
+	for id := range results {
+		if !uses[id] {
+			orphanResults[id] = true
+		}
+	}
+	return
 }
 
 func shortID(p string) string {
@@ -84,21 +131,42 @@ func shortID(p string) string {
 	return b
 }
 
-// check splices once and validates the result. "" is valid; "refused" is a
-// splice the code declined; anything else names the defect.
-func check(path string, e adapter.Edit) string {
+func recordRefusal(refusReason error, notOnLine, nothingLeft, version, partial, unmarked, other *int) {
+	if refusReason == nil {
+		*other++
+		return
+	}
+	if errors.Is(refusReason, claude.ErrNotOnLine) {
+		*notOnLine++
+	} else if errors.Is(refusReason, claude.ErrNothingLeft) {
+		*nothingLeft++
+	} else if errors.Is(refusReason, claude.ErrUnsupportedVersion) {
+		*version++
+	} else if errors.Is(refusReason, claude.ErrPartialTranscript) {
+		*partial++
+	} else if errors.Is(refusReason, claude.ErrUnmarkedSeed) {
+		*unmarked++
+	} else {
+		*other++
+	}
+}
+
+// check splices once and validates the result. returns ("", nil) for valid,
+// ("refused", err) for a splice Splice declined, ("inherited", nil) for
+// defects inherited from the source, and (defect name, nil) for introduced defects.
+func check(path string, e adapter.Edit, sourceOrphans struct{ orphanUses, orphanResults map[string]bool }) (string, error) {
 	res, err := claude.Splice(path, e, "/splicecheck")
 	if err != nil {
-		return "refused"
+		return "refused", err
 	}
 	out, _ := filepath.Glob(filepath.Join(claude.ProjectsDir(), "*", res.SessionID+".jsonl"))
 	if len(out) != 1 {
-		return "no output file"
+		return "no output file", nil
 	}
 	defer os.Remove(out[0])
 	es, skipped, err := claude.ParseFile(out[0])
 	if err != nil || skipped > 0 {
-		return "output does not parse"
+		return "output does not parse", nil
 	}
 	have := map[string]bool{}
 	uses, results := map[string]bool{}, map[string]bool{}
@@ -129,21 +197,27 @@ func check(path string, e adapter.Edit) string {
 		if p == "" {
 			roots++
 		} else if !have[p] {
-			return "an entry's parent is missing"
+			return "an entry's parent is missing", nil
 		}
 	}
 	if roots != 1 {
-		return fmt.Sprintf("%d roots", roots)
+		return fmt.Sprintf("%d roots", roots), nil
 	}
 	for id := range uses {
 		if !results[id] {
-			return "a tool_use has no tool_result"
+			if sourceOrphans.orphanUses[id] {
+				return "inherited", nil
+			}
+			return "a tool_use has no tool_result", nil
 		}
 	}
 	for id := range results {
 		if !uses[id] {
-			return "a tool_result has no tool_use"
+			if sourceOrphans.orphanResults[id] {
+				return "inherited", nil
+			}
+			return "a tool_result has no tool_use", nil
 		}
 	}
-	return ""
+	return "", nil
 }
