@@ -448,6 +448,26 @@ func TestACutThatFailsAfterTheFoldSaysSo(t *testing.T) {
 	}
 }
 
+// The place menu and confirmation can sit on screen; the source's agent may
+// start a turn meanwhile, and cutting then would hide the line it runs on.
+func TestAMoveChecksTheSourceAgainBeforeCutting(t *testing.T) {
+	fa := &fakeAdapter{}
+	h := &herdrLog{status: []string{"idle", "working"}}
+	u, _ := press(t, at(t, moveUI(t, fa, h), "o1"), enter, down, enter)
+	_, cmd := press(t, u, enter)
+	msg := cmd().(actionDoneMsg)
+	if got := strings.Join(fa.writes, ","); got != "graft o" {
+		t.Fatalf("writes %s, want the fold and no cut", got)
+	}
+	if got := strings.Join(h.calls, ","); got != "live s,live s" {
+		t.Fatalf("herdr calls %s, want the source asked at ⏎ and again before the cut", got)
+	}
+	if msg.status != "folded into o, but the source was not cut: agent is working — wait for it to finish; nothing was written" ||
+		!msg.reload || msg.quit || msg.tip != "new-sid" {
+		t.Fatalf("%+v", msg)
+	}
+}
+
 func TestFoldingIntoTheSourceLineIsRefused(t *testing.T) {
 	fa := &fakeAdapter{}
 	u, cmd := press(t, at(t, moveUI(t, fa, &herdrLog{}), "t1"), enter)

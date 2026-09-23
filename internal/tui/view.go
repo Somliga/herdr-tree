@@ -276,7 +276,9 @@ func (u *uiModel) rebuild() {
 // never actually read by anyone.
 type actionDoneMsg struct {
 	status string
-	quit   bool
+	// quit and reload are set only when the action succeeded; cutAfter
+	// relies on that to cut only after a fold that landed.
+	quit bool
 	// reload re-reads the sessions: an edit opens nothing, so the overlay is
 	// still up and the tree on screen still shows the old line. tip names the
 	// session whose tip the cursor moves to.

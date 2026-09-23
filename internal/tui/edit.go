@@ -3,6 +3,7 @@ package tui
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -84,8 +85,9 @@ func foldCmd(a adapter.Adapter, st *store.Store, op editOp, mv foldMove) tea.Cmd
 
 // cutAfter runs fold and, only if it landed, cuts mv's range from its source.
 // The fold comes first: if the cut then fails, the stretch is in two places,
-// never in none. target is the session the user folded into.
-func cutAfter(fold tea.Cmd, a adapter.Adapter, st *store.Store, mv foldMove, target string) tea.Cmd {
+// never in none. target is the session the user folded into. The cut is
+// editCmd's, so the source's agent is asked again right before it (§6.1).
+func cutAfter(fold tea.Cmd, a adapter.Adapter, st *store.Store, mv foldMove, target string, live LiveFunc) tea.Cmd {
 	return func() tea.Msg {
 		msg := fold().(actionDoneMsg)
 		// A fold reloads or quits only when it wrote and recorded; anything
@@ -93,15 +95,17 @@ func cutAfter(fold tea.Cmd, a adapter.Adapter, st *store.Store, mv foldMove, tar
 		if !msg.reload && !msg.quit {
 			return msg
 		}
-		res, failed := writeEdit(a, st, mv.cut)
-		if failed != "" {
+		cut := editCmd(a, st, mv.cut, live)().(actionDoneMsg)
+		if !cut.reload {
 			tip := msg.tip
 			if tip == "" {
 				tip = target
 			}
-			return actionDoneMsg{status: "folded into " + shortID(target) + ", but the source was not cut: " + scrubbed(errors.New(failed), mv.sum.Text), reload: true, tip: tip}
+			return actionDoneMsg{status: "folded into " + shortID(target) + ", but the source was not cut: " + scrubbed(errors.New(cut.status), mv.sum.Text), reload: true, tip: tip}
 		}
-		msg.status = fmt.Sprintf("folded into %s, cut %d turns from %s → %s", shortID(target), res.Removed, shortID(mv.cut.src.ID), shortID(res.SessionID))
+		// "cut n turns from <src> → <new>", without the pointer to the cut
+		// line: the cursor lands on the fold's result.
+		msg.status = "folded into " + shortID(target) + ", " + strings.TrimSuffix(cut.status, continueThere)
 		return msg
 	}
 }
@@ -112,8 +116,10 @@ func (u uiModel) moving(fold tea.Cmd, at *tree.Node) tea.Cmd {
 	if u.folding == nil {
 		return fold
 	}
-	return cutAfter(fold, u.a, u.st, *u.folding, at.SessionID)
+	return cutAfter(fold, u.a, u.st, *u.folding, at.SessionID, u.live)
 }
+
+const continueThere = " — ⏎ on it to continue there"
 
 // editCmd runs an edit to completion or to its first failure, in the order
 // the spec fixes (§6.1). Each step runs only if the one before succeeded, and
@@ -147,35 +153,25 @@ func editCmd(a adapter.Adapter, st *store.Store, op editOp, live LiveFunc) tea.C
 				return actionDoneMsg{status: "agent is " + status + " — wait for it to finish; nothing was written"}
 			}
 		}
-		res, failed := writeEdit(a, st, op)
-		if failed != "" {
-			return actionDoneMsg{status: failed}
+		res, err := a.Splice(op.src, op.edit, op.dst)
+		if err != nil {
+			return actionDoneMsg{status: op.kind + " failed: " + scrubbed(err, op.edit.Seed)}
+		}
+		b := store.Branch{Kind: op.kind, Title: op.title, CreatedAt: time.Now().UTC()}
+		if op.kind == store.KindCut {
+			b.Cut = &store.Cut{Turns: res.Removed, At: res.After}
+		}
+		st.Replace(op.src.ID, res.SessionID, b)
+		if err := st.Save(); err != nil {
+			return actionDoneMsg{status: op.kind + " into " + shortID(res.SessionID) + ", but the tree was not saved: " + err.Error()}
 		}
 		what := op.kind
 		if op.kind == store.KindCut {
 			what = fmt.Sprintf("cut %d turns from", res.Removed)
 		}
-		return actionDoneMsg{status: what + " " + shortID(op.src.ID) + " → " + shortID(res.SessionID) + " — ⏎ on it to continue there",
+		return actionDoneMsg{status: what + " " + shortID(op.src.ID) + " → " + shortID(res.SessionID) + continueThere,
 			reload: true, tip: res.SessionID}
 	}
-}
-
-// writeEdit splices op and records the new line as replacing its source
-// (§5.1). failed is the status when either did not happen.
-func writeEdit(a adapter.Adapter, st *store.Store, op editOp) (adapter.Spliced, string) {
-	res, err := a.Splice(op.src, op.edit, op.dst)
-	if err != nil {
-		return res, op.kind + " failed: " + scrubbed(err, op.edit.Seed)
-	}
-	b := store.Branch{Kind: op.kind, Title: op.title, CreatedAt: time.Now().UTC()}
-	if op.kind == store.KindCut {
-		b.Cut = &store.Cut{Turns: res.Removed, At: res.After}
-	}
-	st.Replace(op.src.ID, res.SessionID, b)
-	if err := st.Save(); err != nil {
-		return res, op.kind + " into " + shortID(res.SessionID) + ", but the tree was not saved: " + err.Error()
-	}
-	return res, ""
 }
 
 // handoverCmd opens a replacement with focus and only then closes the pane
