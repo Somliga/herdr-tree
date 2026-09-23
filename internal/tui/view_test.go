@@ -78,6 +78,10 @@ type fakeAdapter struct {
 	summarisedFrom, summarisedTo string
 	seededWith                   string
 	resumed                      string
+
+	span      adapter.Span
+	spliceErr error
+	spliced   []adapter.Edit
 }
 
 func (f *fakeAdapter) Name() string                               { return "fake" }
@@ -104,6 +108,16 @@ func (f *fakeAdapter) Summarise(_ adapter.Session, fromTurn, toTurn string) (str
 		return "", f.summariseErr
 	}
 	return f.summary, nil
+}
+func (f *fakeAdapter) Widen(adapter.Session, string, string) (adapter.Span, error) {
+	return f.span, nil
+}
+func (f *fakeAdapter) Splice(_ adapter.Session, e adapter.Edit, _ string) (adapter.Spliced, error) {
+	if f.spliceErr != nil {
+		return adapter.Spliced{}, f.spliceErr
+	}
+	f.spliced = append(f.spliced, e)
+	return adapter.Spliced{SessionID: "spliced-sid", Removed: 2, After: "t3"}, nil
 }
 
 func TestFailedResumeKeepsTheOverlayOpen(t *testing.T) {

@@ -157,6 +157,78 @@ func checkVersion(es []Entry) error {
 	return nil // no version stamped anywhere: nothing to disagree with
 }
 
+// rehome copies an entry into a new session: session id and cwd rewritten,
+// every other top-level key verbatim. Shallow — nested maps (message,
+// attachment, toolUseResult) still alias the source, so never mutate inside
+// them.
+func rehome(e Entry, sid, cwd string) map[string]any {
+	m := make(map[string]any, len(e.Raw))
+	for k, v := range e.Raw {
+		m[k] = v
+	}
+	for _, k := range []string{"sessionId", "session_id"} {
+		if _, ok := m[k]; ok {
+			m[k] = sid
+		}
+	}
+	if _, ok := m["cwd"]; ok {
+		m["cwd"] = cwd
+	}
+	return m
+}
+
+// seedEntry is the one user entry we write ourselves. parent "" makes it a
+// root. The herdrTree kind is DERIVED from the text prefix, which is what
+// everything else reads.
+func seedEntry(seed, uuid, parent, sid, cwd string) Entry {
+	var p any
+	if parent != "" {
+		p = parent
+	}
+	kind := "compaction"
+	if strings.HasPrefix(seed, SummaryPrefix) {
+		kind = "summary"
+	}
+	return Entry{Raw: map[string]any{
+		"type": "user", "uuid": uuid, "parentUuid": p,
+		"sessionId": sid, "cwd": cwd,
+		"version":   verifiedMajorMinor + ".0",
+		"timestamp": time.Now().UTC().Format(time.RFC3339),
+		"userType":  "external", "isSidechain": false,
+		"message": map[string]any{"role": "user",
+			"content": []any{map[string]any{"type": "text", "text": seed}}},
+		"herdrTree": map[string]any{"kind": kind},
+	}}
+}
+
+// writeSession writes buf as a new transcript for dstCWD, mode 0600,
+// atomically, and returns its path.
+func writeSession(dstCWD, sid string, buf []byte) (string, error) {
+	dstDir := filepath.Join(ProjectsDir(), SlugFor(dstCWD))
+	if err := os.MkdirAll(dstDir, 0o700); err != nil {
+		return "", err
+	}
+	dstPath := filepath.Join(dstDir, sid+".jsonl")
+	tmp, err := os.CreateTemp(dstDir, ".graft-*")
+	if err != nil {
+		return "", err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName) // no-op once renamed
+	if err := tmp.Chmod(0o600); err != nil {
+		tmp.Close()
+		return "", err
+	}
+	if _, err := tmp.Write(buf); err != nil {
+		tmp.Close()
+		return "", err
+	}
+	if err := tmp.Close(); err != nil {
+		return "", err
+	}
+	return dstPath, os.Rename(tmpName, dstPath)
+}
+
 func newUUIDv4() (string, error) {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
@@ -208,12 +280,6 @@ func GraftSeeded(srcPath, atNode, dstCWD, seed string) (newSessionID, dstPath st
 		return "", "", err
 	}
 
-	dstDir := filepath.Join(ProjectsDir(), SlugFor(dstCWD))
-	if err := os.MkdirAll(dstDir, 0o700); err != nil {
-		return "", "", err
-	}
-	dstPath = filepath.Join(dstDir, newSessionID+".jsonl")
-
 	var buf []byte
 	for _, e := range es {
 		u := e.UUID()
@@ -234,21 +300,7 @@ func GraftSeeded(srcPath, atNode, dstCWD, seed string) (newSessionID, dstPath st
 		if !keep[u] {
 			continue
 		}
-		// Shallow copy, so the source entries stay untouched. Only top-level
-		// keys are rewritten below; nested maps (message, attachment,
-		// toolUseResult) still alias the source, so never mutate inside them.
-		m := make(map[string]any, len(e.Raw))
-		for k, v := range e.Raw {
-			m[k] = v
-		}
-		for _, k := range []string{"sessionId", "session_id"} {
-			if _, ok := m[k]; ok {
-				m[k] = newSessionID
-			}
-		}
-		if _, ok := m["cwd"]; ok {
-			m["cwd"] = dstCWD
-		}
+		m := rehome(e, newSessionID, dstCWD)
 		b, err := Marshal(Entry{Raw: m})
 		if err != nil {
 			return "", "", err
@@ -263,24 +315,7 @@ func GraftSeeded(srcPath, atNode, dstCWD, seed string) (newSessionID, dstPath st
 		if err != nil {
 			return "", "", err
 		}
-		// For us; the text prefix is what anything else reads, so the field
-		// is DERIVED from it rather than passed in. Hardcoding "summary"
-		// here would stamp a compaction entry as an import.
-		raw := map[string]any{
-			"type": "user", "uuid": seedUUID, "parentUuid": atNode,
-			"sessionId": newSessionID, "cwd": dstCWD,
-			"version":   verifiedMajorMinor + ".0",
-			"timestamp": time.Now().UTC().Format(time.RFC3339),
-			"userType":  "external", "isSidechain": false,
-			"message": map[string]any{"role": "user",
-				"content": []any{map[string]any{"type": "text", "text": seed}}},
-		}
-		kind := "compaction"
-		if strings.HasPrefix(seed, SummaryPrefix) {
-			kind = "summary"
-		}
-		raw["herdrTree"] = map[string]any{"kind": kind}
-		b, err := Marshal(Entry{Raw: raw})
+		b, err := Marshal(seedEntry(seed, seedUUID, atNode, newSessionID, dstCWD))
 		if err != nil {
 			return "", "", err
 		}
@@ -301,24 +336,8 @@ func GraftSeeded(srcPath, atNode, dstCWD, seed string) (newSessionID, dstPath st
 	buf = append(buf, leaf...)
 	buf = append(buf, '\n')
 
-	tmp, err := os.CreateTemp(dstDir, ".graft-*")
+	dstPath, err = writeSession(dstCWD, newSessionID, buf)
 	if err != nil {
-		return "", "", err
-	}
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName) // no-op once renamed
-	if err := tmp.Chmod(0o600); err != nil {
-		tmp.Close()
-		return "", "", err
-	}
-	if _, err := tmp.Write(buf); err != nil {
-		tmp.Close()
-		return "", "", err
-	}
-	if err := tmp.Close(); err != nil {
-		return "", "", err
-	}
-	if err := os.Rename(tmpName, dstPath); err != nil {
 		return "", "", err
 	}
 	return newSessionID, dstPath, nil

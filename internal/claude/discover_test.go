@@ -6,10 +6,10 @@ import (
 	"testing"
 )
 
-// writeSession copies the fixture into a fake projects tree, rewriting cwd.
+// writeFixtureSession copies the fixture into a fake projects tree, rewriting cwd.
 // The slug is derived with SlugFor so the file lands exactly where
 // TranscriptPath will later look for it.
-func writeSession(t *testing.T, projects, id, cwd string) {
+func writeFixtureSession(t *testing.T, projects, id, cwd string) {
 	t.Helper()
 	es, _, err := ParseFile("testdata/simple.jsonl")
 	if err != nil {
@@ -57,7 +57,7 @@ func TestDiscoverCarriesTheDiscoveredPath(t *testing.T) {
 	t.Setenv("CLAUDE_PROJECTS_DIR", projects)
 	repoDir := t.TempDir()
 	id := "11111111-1111-4111-8111-111111111111"
-	writeSession(t, projects, id, repoDir)
+	writeFixtureSession(t, projects, id, repoDir)
 
 	got, err := Discover(repoDir)
 	if err != nil {
@@ -119,8 +119,8 @@ func TestDiscoverGroupsByRepoRoot(t *testing.T) {
 	repoDir := t.TempDir()
 	other := t.TempDir()
 
-	writeSession(t, projects, "11111111-1111-4111-8111-111111111111", repoDir)
-	writeSession(t, projects, "22222222-2222-4222-8222-222222222222", other)
+	writeFixtureSession(t, projects, "11111111-1111-4111-8111-111111111111", repoDir)
+	writeFixtureSession(t, projects, "22222222-2222-4222-8222-222222222222", other)
 
 	got, err := Discover(repoDir)
 	if err != nil {
@@ -150,8 +150,8 @@ func TestDiscoverSkipsOtherReposWithoutFullyParsingThem(t *testing.T) {
 	mine := t.TempDir()
 	theirs := t.TempDir()
 
-	writeSession(t, projects, "11111111-1111-4111-8111-111111111111", mine)
-	writeSession(t, projects, "22222222-2222-4222-8222-222222222222", theirs)
+	writeFixtureSession(t, projects, "11111111-1111-4111-8111-111111111111", mine)
+	writeFixtureSession(t, projects, "22222222-2222-4222-8222-222222222222", theirs)
 
 	// Corrupt the OTHER repo's transcript beyond the head. A full parse would
 	// still succeed, but the cheap head check must reject it before we get
@@ -230,7 +230,7 @@ func TestDiscoverMarksPartialTranscriptBroken(t *testing.T) {
 	repoDir := t.TempDir()
 
 	id := "11111111-1111-4111-8111-111111111111"
-	writeSession(t, projects, id, repoDir)
+	writeFixtureSession(t, projects, id, repoDir)
 
 	// Append a line truncated mid-write, exactly as a transcript being
 	// appended to right now would look.
@@ -260,7 +260,7 @@ func TestDiscoverLeavesCleanSessionUnbroken(t *testing.T) {
 	projects := t.TempDir()
 	t.Setenv("CLAUDE_PROJECTS_DIR", projects)
 	repoDir := t.TempDir()
-	writeSession(t, projects, "11111111-1111-4111-8111-111111111111", repoDir)
+	writeFixtureSession(t, projects, "11111111-1111-4111-8111-111111111111", repoDir)
 
 	got, err := Discover(repoDir)
 	if err != nil {
@@ -276,7 +276,7 @@ func TestDiscoverExcludesWhollyUnreadableSession(t *testing.T) {
 	t.Setenv("CLAUDE_PROJECTS_DIR", projects)
 	repoDir := t.TempDir()
 
-	writeSession(t, projects, "11111111-1111-4111-8111-111111111111", repoDir)
+	writeFixtureSession(t, projects, "11111111-1111-4111-8111-111111111111", repoDir)
 	// a file with no parseable entry at all
 	bad := filepath.Join(projects, SlugFor(repoDir), "33333333-3333-4333-8333-333333333333.jsonl")
 	if err := os.WriteFile(bad, []byte("not json\n"), 0o600); err != nil {

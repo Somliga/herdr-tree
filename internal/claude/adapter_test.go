@@ -24,7 +24,7 @@ func TestAdapterBranchWritesNewSession(t *testing.T) {
 	t.Setenv("CLAUDE_PROJECTS_DIR", projects)
 	repoDir := t.TempDir()
 
-	writeSession(t, projects, "11111111-1111-4111-8111-111111111111", repoDir)
+	writeFixtureSession(t, projects, "11111111-1111-4111-8111-111111111111", repoDir)
 
 	sessions, err := New().Discover(repoDir)
 	if err != nil {
@@ -49,7 +49,7 @@ func TestAdapterPreviewCountsWhatIsCarried(t *testing.T) {
 	projects := t.TempDir()
 	t.Setenv("CLAUDE_PROJECTS_DIR", projects)
 	repoDir := t.TempDir()
-	writeSession(t, projects, "11111111-1111-4111-8111-111111111111", repoDir)
+	writeFixtureSession(t, projects, "11111111-1111-4111-8111-111111111111", repoDir)
 
 	sessions, _ := New().Discover(repoDir)
 	src := sessions[0]
@@ -144,7 +144,7 @@ func TestPreviewRejectsAnUnknownNode(t *testing.T) {
 	projects := t.TempDir()
 	t.Setenv("CLAUDE_PROJECTS_DIR", projects)
 	repoDir := t.TempDir()
-	writeSession(t, projects, "11111111-1111-4111-8111-111111111111", repoDir)
+	writeFixtureSession(t, projects, "11111111-1111-4111-8111-111111111111", repoDir)
 
 	sessions, _ := New().Discover(repoDir)
 	if _, _, _, err := New().Preview(sessions[0], "no-such-node"); err == nil {
@@ -156,7 +156,7 @@ func TestAdapterBranchRejectsUnknownNode(t *testing.T) {
 	projects := t.TempDir()
 	t.Setenv("CLAUDE_PROJECTS_DIR", projects)
 	repoDir := t.TempDir()
-	writeSession(t, projects, "11111111-1111-4111-8111-111111111111", repoDir)
+	writeFixtureSession(t, projects, "11111111-1111-4111-8111-111111111111", repoDir)
 
 	sessions, _ := New().Discover(repoDir)
 	if _, err := New().Branch(sessions[0], "no-such-node", repoDir); err == nil {

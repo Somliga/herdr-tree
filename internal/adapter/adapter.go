@@ -71,4 +71,32 @@ type Adapter interface {
 	BranchSeeded(src Session, atNode, dstCWD, seed string) (newSessionID string, err error)
 	Resume(sessionID, cwd string) error
 	Summarise(src Session, fromTurn, toTurn string) (string, error)
+	// Widen reports what a range covers once widened to whole turns.
+	Widen(src Session, fromNode, toNode string) (Span, error)
+	// Splice writes a new session with e applied to src's current line. The
+	// source is never modified.
+	Splice(src Session, e Edit, dstCWD string) (Spliced, error)
+}
+
+// Edit is one change to a line's context. From..To names a range of entries,
+// widened to whole turns, to remove; Seed, if set, takes its place. After,
+// used instead of a range, names an entry after whose turn Seed is inserted
+// and nothing is removed. A range with no Seed is a cut.
+type Edit struct {
+	From, To string
+	After    string
+	Seed     string
+}
+
+// Span is a selection widened to whole turns.
+type Span struct {
+	First, Last int    // turn numbers; 0 is the preamble before the first prompt
+	End         string // the last entry of turn Last: where a summary stops reading
+}
+
+// Spliced is what a splice wrote.
+type Spliced struct {
+	SessionID string
+	Removed   int    // whole turns removed, not counting the preamble
+	After     string // the first entry after the edit, "" when nothing follows
 }

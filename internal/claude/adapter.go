@@ -96,6 +96,14 @@ func (claudeAdapter) Summarise(src adapter.Session, fromTurn, toTurn string) (st
 	return Summarise(sourcePath(src), fromTurn, toTurn, tmp)
 }
 
+func (claudeAdapter) Widen(src adapter.Session, fromNode, toNode string) (adapter.Span, error) {
+	return Widen(sourcePath(src), fromNode, toNode)
+}
+
+func (claudeAdapter) Splice(src adapter.Session, e adapter.Edit, dstCWD string) (adapter.Spliced, error) {
+	return Splice(sourcePath(src), e, dstCWD)
+}
+
 // agentName builds a Herdr agent name for a session in a pane.
 //
 // It includes the pane because Herdr requires live agent names to be unique,
