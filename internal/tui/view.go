@@ -89,6 +89,12 @@ func renderRow(r Row, selected bool, currentSession string, width int) (string, 
 	if r.Node.IsSessionRoot {
 		b.WriteString(shortID(r.Node.SessionID) + "  ")
 	}
+	if r.Node.FromRemoved {
+		b.WriteString("from a removed stretch  ")
+	}
+	if r.Node.CutHere > 0 {
+		b.WriteString(fmt.Sprintf("✂ %d turns cut  ", r.Node.CutHere))
+	}
 	if r.HasChildren && r.Folded {
 		b.WriteString("▸ ")
 	}
@@ -117,6 +123,9 @@ func renderRow(r Row, selected bool, currentSession string, width int) (string, 
 		title = "transcript unreadable — metadata only"
 	}
 	b.WriteString(title)
+	if r.Node.CutAfter > 0 {
+		b.WriteString(fmt.Sprintf("   ✂ %d turns cut after this", r.Node.CutAfter))
+	}
 
 	currentTip := r.Node.SessionID != "" && r.Node.SessionID == currentSession && r.Node.IsSessionLeaf
 	if currentTip {

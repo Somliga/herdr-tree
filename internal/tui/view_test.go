@@ -1006,3 +1006,18 @@ func summariesFor(st *store.Store, sessionID string) []store.Summary {
 	}
 	return out
 }
+
+func TestRenderRowShowsCutsAndRemovedOrigins(t *testing.T) {
+	here := &tree.Node{Node: adapter.Node{ID: "t4", Title: "four", Kind: adapter.KindHuman}, SessionID: "s", CutHere: 8}
+	if got, _ := renderRow(Row{Node: here}, false, "", 120); !strings.Contains(got, "✂ 8 turns cut") {
+		t.Fatalf("cut marker missing: %q", got)
+	}
+	end := &tree.Node{Node: adapter.Node{ID: "t2", Title: "two", Kind: adapter.KindHuman}, SessionID: "s", IsSessionLeaf: true, CutAfter: 3}
+	if got, _ := renderRow(Row{Node: end}, false, "", 120); !strings.Contains(got, "✂ 3 turns cut after this") {
+		t.Fatalf("trailing cut marker missing: %q", got)
+	}
+	orphan := &tree.Node{Node: adapter.Node{ID: "b1", Title: "b"}, SessionID: "br", IsSessionRoot: true, FromRemoved: true}
+	if got, _ := renderRow(Row{Node: orphan}, false, "", 120); !strings.Contains(got, "from a removed stretch") {
+		t.Fatalf("removed-origin marker missing: %q", got)
+	}
+}

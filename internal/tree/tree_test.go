@@ -234,3 +234,117 @@ func TestFirstTurnIsAHeadEvenWhenNotHuman(t *testing.T) {
 func emptyStore() *store.Store {
 	return &store.Store{Version: 1, Branches: map[string]store.Branch{}}
 }
+
+func sessionsIn(roots []*Node) map[string]bool {
+	out := map[string]bool{}
+	var walk func(n *Node)
+	walk = func(n *Node) {
+		out[n.SessionID] = true
+		for _, c := range n.Children {
+			walk(c)
+		}
+	}
+	for _, r := range roots {
+		walk(r)
+	}
+	return out
+}
+
+func TestAReplacedLineIsHiddenAndItsReplacementShown(t *testing.T) {
+	st := &store.Store{Branches: map[string]store.Branch{}}
+	st.Replace("old", "new", store.Branch{Kind: store.KindCut})
+	roots := Build([]adapter.Session{sess("new", "t1", "t4"), sess("old", "t1", "t2", "t3", "t4")}, st)
+	got := sessionsIn(roots)
+	if got["old"] || !got["new"] {
+		t.Fatalf("sessions shown %v, want new and not old", got)
+	}
+}
+
+// If the replacement's transcript is gone, hiding the old line would lose the
+// conversation from view entirely.
+func TestAReplacedLineShowsAgainIfItsReplacementIsGone(t *testing.T) {
+	st := &store.Store{Branches: map[string]store.Branch{}}
+	st.Replace("old", "new", store.Branch{Kind: store.KindCut})
+	roots := Build([]adapter.Session{sess("old", "t1", "t2")}, st)
+	if !sessionsIn(roots)["old"] {
+		t.Fatal("old line hidden though nothing replaces it on disk")
+	}
+}
+
+func TestABranchOffAReplacedLineReattachesToTheSameTurn(t *testing.T) {
+	st := &store.Store{Branches: map[string]store.Branch{
+		"br": {GraftedFrom: store.From{SessionID: "old", Node: "t4"}},
+	}}
+	st.Replace("old", "new", store.Branch{Kind: store.KindCompacted})
+	roots := Build([]adapter.Session{
+		sess("new", "t1", "seed", "t4"), sess("old", "t1", "t2", "t3", "t4"), sess("br", "b1"),
+	}, st)
+	var t4 *Node
+	var walk func(n *Node)
+	walk = func(n *Node) {
+		if n.SessionID == "new" && n.Node.ID == "t4" {
+			t4 = n
+		}
+		for _, c := range n.Children {
+			walk(c)
+		}
+	}
+	for _, r := range roots {
+		walk(r)
+	}
+	if t4 == nil {
+		t.Fatal("t4 missing from the new line")
+	}
+	found := false
+	for _, c := range t4.Children {
+		if c.SessionID == "br" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("the branch did not re-attach to t4 of the new line")
+	}
+}
+
+func TestABranchOffARemovedTurnBecomesAMarkedRoot(t *testing.T) {
+	st := &store.Store{Branches: map[string]store.Branch{
+		"br": {GraftedFrom: store.From{SessionID: "old", Node: "t2"}},
+	}}
+	st.Replace("old", "new", store.Branch{Kind: store.KindCut})
+	roots := Build([]adapter.Session{sess("new", "t1", "t4"), sess("old", "t1", "t2", "t4"), sess("br", "b1")}, st)
+	for _, r := range roots {
+		if r.SessionID == "br" {
+			if !r.FromRemoved {
+				t.Fatal("the orphaned branch is not marked as coming from a removed stretch")
+			}
+			return
+		}
+	}
+	t.Fatal("the orphaned branch is not a root")
+}
+
+func TestTheCutMarkerSitsWhereTheCutWas(t *testing.T) {
+	st := &store.Store{Branches: map[string]store.Branch{}}
+	st.Replace("old", "new", store.Branch{Kind: store.KindCut, Cut: &store.Cut{Turns: 2, At: "t4"}})
+	st.Replace("old2", "new2", store.Branch{Kind: store.KindCut, Cut: &store.Cut{Turns: 3}})
+	roots := Build([]adapter.Session{sess("new", "t1", "t4"), sess("new2", "u1", "u2")}, st)
+	var here, after int
+	var walk func(n *Node)
+	walk = func(n *Node) {
+		if n.SessionID == "new" && n.Node.ID == "t4" {
+			here = n.CutHere
+		}
+		if n.SessionID == "new2" && n.IsSessionLeaf {
+			after = n.CutAfter
+		}
+		for _, c := range n.Children {
+			walk(c)
+		}
+	}
+	for _, r := range roots {
+		walk(r)
+	}
+	if here != 2 || after != 3 {
+		t.Fatalf("CutHere %d on t4, CutAfter %d on the leaf; want 2 and 3", here, after)
+	}
+}
