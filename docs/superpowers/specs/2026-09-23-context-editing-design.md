@@ -61,8 +61,9 @@ summarise & continue · summarise & fold · cut · esc back
 
 - **summarise & continue** — the range is replaced by its summary in its own
   line (a compaction).
-- **summarise & fold** — the range is summarised and its own line is left
-  untouched; the user then chooses where to fold the summary in (§2.7).
+- **summarise & fold** — a move: the range is summarised, the user chooses
+  where to fold the summary in, and only then is the range cut from its own
+  line (§2.7).
 - **cut** — the range is removed.
 
 **No edit opens a pane.** Every edit only writes; the tree reloads with the
@@ -79,7 +80,7 @@ or stops at the first failure (§6).
   `Then: turns <a>–<b> are replaced by the summary · a new session replaces
   this line in the tree (the old one is hidden, kept on disk)`.
 - **summarise & fold**: the same cost text, then `Then: you choose where to fold
-  it in. Nothing is written to this line.`
+  it in. When you do, turns <a>–<b> are cut from this line.`
 - **cut**: `Removes turns <a>–<b>. Costs nothing. No note is left in the
   conversation.` plus the same replacement line.
 
@@ -92,8 +93,10 @@ Each refusal is a status line with its reason. The range stays fixed so it can
 be adjusted.
 
 - The range crosses sessions (v2, unchanged).
-- The session's live agent is `working` (§6.1) — continue and cut only; fold
-  writes nothing to the source line.
+- The session's live agent is busy (§6.1). For fold this is checked when the
+  summary is placed, since that is when the source is written.
+- A fold whose range covers every turn of its line (it would leave nothing);
+  checked before the summary is paid for.
 - A cut would remove every turn.
 - The range is not on the chain up to the session's tip (§3.3).
 
@@ -122,14 +125,27 @@ insert, and `s` → cut covers it.
 Both summarise options store the summary exactly as v2 does, so `p` can fold
 the same summary into another line later.
 
-### 2.7 Fold mode
+### 2.7 Fold mode — a move
 
 After **summarise & fold**'s summary arrives, the overlay stays open in fold
 mode, status `summary ready — move to a turn and press ⏎ to fold it in · esc
-keeps it for later (p)`. `⏎` on a turn does exactly what choosing that
-summary in `p`'s picker does (§2.5): delivered as a message at the live tip,
-the insert/branch menu anywhere else. `esc` leaves fold mode; the summary stays
-stored.
+keeps it for later (p)`.
+
+- `⏎` on a turn does what choosing that summary in `p`'s picker does (§2.5):
+  delivered as a message at the live tip, the insert/branch menu elsewhere —
+  **and then the range is cut from its source line**, as a `cut` (§5.1, the
+  `✂` marker). The place menu and its confirmation say so:
+  `…and turns <a>–<b> are cut from <source8>`.
+- Before anything is written, the source's agent is checked (§6.1); if busy,
+  nothing is written anywhere.
+- Folding into the source line itself is refused (`fold into another line —
+  use continue for this one`).
+- **Order: the fold is written first, then the cut.** If the cut fails, the
+  status says `folded into <x>, but the source was not cut: <err>` — a copy,
+  nothing lost. The reverse order could lose the stretch with its summary
+  nowhere.
+- `esc` leaves fold mode and cancels the move: the source is untouched and the
+  summary stays stored for `p` (which never cuts).
 
 ## 3. The splice
 
@@ -208,7 +224,9 @@ after the last boundary — the same line the tree shows.
 
 If the summary call fails, nothing is written or hidden.
 
-summarise & fold is steps 1–3 (without the busy check), then fold mode (§2.7).
+summarise & fold is steps 2–3 (the whole-line refusal instead of the busy
+check), then fold mode (§2.7), where the placement writes the fold and then
+cuts the source.
 
 ## 5. Store and tree
 
