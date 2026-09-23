@@ -415,7 +415,7 @@ func foldBackCmd(a adapter.Adapter, st *store.Store, at *tree.Node, dst string, 
 		src := adapter.Session{ID: at.SessionID, CWD: at.SessionCWD, Path: at.SessionPath}
 		sid, err := a.BranchSeeded(src, at.Node.ID, dst, seed)
 		if err != nil {
-			return actionDoneMsg{status: "fold back failed: " + scrubbed(err, seed)}
+			return actionDoneMsg{status: "branch failed: " + scrubbed(err, seed)}
 		}
 		st.Add(sid, store.Branch{
 			GraftedFrom: store.From{SessionID: at.SessionID, Node: at.Node.ID},

@@ -426,7 +426,7 @@ func TestAFailedFoldCutsNothing(t *testing.T) {
 	u, _ := press(t, at(t, moveUI(t, fa, &herdrLog{}), "o1"), enter, down, enter)
 	_, cmd := press(t, u, enter)
 	msg := cmd().(actionDoneMsg)
-	if got := strings.Join(fa.writes, ","); got != "graft o" || msg.status != "fold back failed: graft refused" {
+	if got := strings.Join(fa.writes, ","); got != "graft o" || msg.status != "branch failed: graft refused" {
 		t.Fatalf("writes %s status %q", got, msg.status)
 	}
 
