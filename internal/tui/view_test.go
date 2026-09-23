@@ -2,6 +2,7 @@ package tui
 
 import (
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -81,9 +82,12 @@ type fakeAdapter struct {
 	resumed                      string
 	focused                      bool
 
-	span      adapter.Span
-	spliceErr error
-	spliced   []adapter.Edit
+	span        adapter.Span
+	spliceErr   error
+	spliceErrAt int // fail only this splice, counting from 1
+	spliced     []adapter.Edit
+	splices     int
+	writes      []string // "splice <src>" and "graft <src>", in order, failed ones too
 
 	sessions []adapter.Session // what Discover finds on a reload
 }
@@ -95,7 +99,8 @@ func (f *fakeAdapter) Preview(adapter.Session, string) (int, int, int64, error) 
 	return 1, 2, 3, nil
 }
 func (f *fakeAdapter) Branch(adapter.Session, string, string) (string, error) { return "new-sid", nil }
-func (f *fakeAdapter) BranchSeeded(_ adapter.Session, _, _, seed string) (string, error) {
+func (f *fakeAdapter) BranchSeeded(src adapter.Session, _, _, seed string) (string, error) {
+	f.writes = append(f.writes, "graft "+src.ID)
 	if f.seedErr != nil {
 		return "", f.seedErr
 	}
@@ -117,12 +122,22 @@ func (f *fakeAdapter) Summarise(_ adapter.Session, fromTurn, toTurn string, comp
 func (f *fakeAdapter) Widen(adapter.Session, string, string) (adapter.Span, error) {
 	return f.span, nil
 }
-func (f *fakeAdapter) Splice(_ adapter.Session, e adapter.Edit, _ string) (adapter.Spliced, error) {
+func (f *fakeAdapter) Splice(src adapter.Session, e adapter.Edit, _ string) (adapter.Spliced, error) {
+	f.writes = append(f.writes, "splice "+src.ID)
+	f.splices++
+	n := f.splices
 	if f.spliceErr != nil {
 		return adapter.Spliced{}, f.spliceErr
 	}
+	if n == f.spliceErrAt {
+		return adapter.Spliced{}, errors.New("disk full")
+	}
 	f.spliced = append(f.spliced, e)
-	return adapter.Spliced{SessionID: "spliced-sid", Removed: 2, After: "t3"}, nil
+	sid := "spliced-sid"
+	if n > 1 {
+		sid = fmt.Sprintf("spliced%d-sid", n)
+	}
+	return adapter.Spliced{SessionID: sid, Removed: 2, After: "t3"}, nil
 }
 
 func TestFailedResumeKeepsTheOverlayOpen(t *testing.T) {

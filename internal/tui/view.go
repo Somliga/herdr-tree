@@ -171,10 +171,10 @@ func confirmText(n *tree.Node, turns, entries int, size int64, dstCWD string) st
 
 // foldBackConfirmText is confirmText's sibling for a fold-back: the same
 // graft, plus one injected turn, so the same figures.
-func foldBackConfirmText(at *tree.Node, turns, entries int, size int64) string {
+func foldBackConfirmText(at *tree.Node, turns, entries int, size int64, note string) string {
 	return fmt.Sprintf(
-		"Fold the summary in at:  %q\n\nThis starts a NEW session carrying %d turn(s) · %d entries · %s, with the summary appended as its next turn.\nThe original is untouched.\n\nOpens nothing: ⏎ on the new line opens it.\n\n[enter] fold back   [esc] cancel",
-		at.Node.Title, turns, entries, humanBytes(size))
+		"Fold the summary in at:  %q\n\nThis starts a NEW session carrying %d turn(s) · %d entries · %s, with the summary appended as its next turn.\nThe original is untouched.\n\nOpens nothing: ⏎ on the new line opens it.%s\n\n[enter] fold back   [esc] cancel",
+		at.Node.Title, turns, entries, humanBytes(size), note)
 }
 
 type uiModel struct {
@@ -219,9 +219,10 @@ type uiModel struct {
 	pickAt  *tree.Node
 	placing store.Summary // the summary chosen in the picker, while the placement menu is open
 
-	// folding is the summary summarise & fold produced, while the user picks
-	// where it goes (§2.7).
-	folding *store.Summary
+	// folding is summarise & fold's move while the user picks where its
+	// summary goes (§2.7); it stays through the place menu and confirmation,
+	// so backing out of either returns to fold mode.
+	folding *foldMove
 
 	labelling *tree.Node // non-nil while typing a label
 	labelText string
@@ -282,7 +283,7 @@ type actionDoneMsg struct {
 	reload bool
 	tip    string
 	// fold puts the overlay into fold mode with the summary just made.
-	fold *store.Summary
+	fold *foldMove
 }
 
 // resumeCmd and branchCmd run OFF the update loop.
@@ -571,7 +572,7 @@ func (u uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return u, nil
 				}
 				u.m.CancelRange() // acted on; a summarise consumes its range
-				u.busy = busy
+				u.busy, u.folding = busy, nil
 				return u, cmd
 			case "esc", "q":
 				// The range survives: escaping the cost dialog is how you go
@@ -589,9 +590,7 @@ func (u uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if n == nil || n.Broken || n.Node.ID == "" {
 					return u, nil
 				}
-				sum := *u.folding
-				u.folding = nil
-				return u.foldAt(n, sum)
+				return u.placeInFoldMode(n)
 			case "esc":
 				u.folding = nil
 				u.status = "summary kept — p folds it in later"
@@ -732,7 +731,7 @@ func (u uiModel) View() string {
 		return menuView("Do what with this range?", rangeMenu, u.menuIdx)
 	}
 	if u.menu == "place" {
-		return menuView(fmt.Sprintf("Fold the summary in at:  %q", u.pickAt.Node.Title), placeMenu, u.menuIdx)
+		return menuView(fmt.Sprintf("Fold the summary in at:  %q", u.pickAt.Node.Title)+u.folding.note(), placeMenu, u.menuIdx)
 	}
 	var b strings.Builder
 	if len(u.m.Rows()) == 0 {

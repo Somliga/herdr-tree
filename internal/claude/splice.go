@@ -34,7 +34,7 @@ func Widen(srcPath, from, to string) (adapter.Span, error) {
 	if err != nil {
 		return adapter.Span{}, err
 	}
-	return adapter.Span{First: a, Last: b, End: l.lastOf(b)}, nil
+	return adapter.Span{First: a, Last: b, End: l.lastOf(b), Turns: l.last}, nil
 }
 
 // Splice writes a new session holding srcPath's current line with e applied:

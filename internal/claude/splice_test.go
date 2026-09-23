@@ -226,8 +226,8 @@ func TestWidenReportsTurnNumbersAndTheReadingEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.First != 2 || s.Last != 3 || s.End != "a3" {
-		t.Fatalf("span %+v, want 2..3 ending a3", s)
+	if s.First != 2 || s.Last != 3 || s.End != "a3" || s.Turns != 4 {
+		t.Fatalf("span %+v, want 2..3 ending a3, of 4 turns", s)
 	}
 }
 

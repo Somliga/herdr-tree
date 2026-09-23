@@ -92,6 +92,7 @@ type Edit struct {
 type Span struct {
 	First, Last int    // turn numbers; 0 is the preamble before the first prompt
 	End         string // the last entry of turn Last: where a summary stops reading
+	Turns       int    // the line's highest turn number
 }
 
 // Spliced is what a splice wrote.
