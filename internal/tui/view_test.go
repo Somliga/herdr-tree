@@ -667,7 +667,7 @@ func TestPWithNoSummariesOffersToMakeOneRatherThanRefusing(t *testing.T) {
 	if cmd != nil || got.picking != nil {
 		t.Fatal("there is nothing to pick")
 	}
-	if !strings.Contains(got.status, "s summarises") {
+	if !strings.Contains(got.status, "s selects a range to squash") {
 		t.Fatalf("the offer does not say how to get a summary: %q", got.status)
 	}
 }

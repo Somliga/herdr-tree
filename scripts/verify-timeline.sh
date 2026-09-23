@@ -124,7 +124,7 @@ echo "[5] Exactly one ⤶ marker on a real injected summary (Task 7):"
 echo "    Checked automatically in step 3 above, against the file this run"
 echo "    actually wrote. What is left for your eyes is the TREE: open the"
 echo "    plugin on a repo that has a real injected summary and confirm the"
-echo "    row reads '⤶ summary of ...' once, not twice — the doubling that"
+echo "    row reads '⤶ merged from ...' once, not twice — the doubling that"
 echo "    shipped once lived in the renderer, not in the transcript."
 echo
 echo "PASS if [1] and [2] hold. [3], [4], [5] are separate manual checks;"

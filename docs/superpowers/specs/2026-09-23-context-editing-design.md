@@ -108,7 +108,7 @@ be adjusted.
 - A drop would remove every turn.
 - The range is not on the chain up to the session's tip (§3.3).
 
-### 2.5 `p` — fold back
+### 2.5 `p` — place a summary
 
 After a summary is picked:
 

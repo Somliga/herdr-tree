@@ -173,7 +173,7 @@ func confirmText(n *tree.Node, turns, entries int, size int64, dstCWD string) st
 // graft, plus one injected turn, so the same figures.
 func foldBackConfirmText(at *tree.Node, turns, entries int, size int64, note string) string {
 	return fmt.Sprintf(
-		"Fold the summary in at:  %q\n\nThis starts a NEW session carrying %d turn(s) · %d entries · %s, with the summary appended as its next turn.\nThe original is untouched.\n\nOpens nothing: ⏎ on the new line opens it.%s\n\n[enter] fold back   [esc] cancel",
+		"Branch at:  %q\n\nThis starts a NEW session carrying %d turn(s) · %d entries · %s, with the summary appended as its next turn.\nThe original is untouched.\n\nOpens nothing: ⏎ on the new line opens it.%s\n\n[enter] branch   [esc] cancel",
 		at.Node.Title, turns, entries, humanBytes(size), note)
 }
 
@@ -423,7 +423,7 @@ func foldBackCmd(a adapter.Adapter, st *store.Store, at *tree.Node, dst string, 
 			CreatedAt:   time.Now().UTC(),
 		})
 		if err := st.Save(); err != nil {
-			return actionDoneMsg{status: "folded " + shortID(sid) + ", but the tree was not saved: " + err.Error()}
+			return actionDoneMsg{status: "branched " + shortID(sid) + ", but the tree was not saved: " + err.Error()}
 		}
 		return actionDoneMsg{status: "branched " + shortID(sid) + " — ⏎ on it to open it", reload: true, tip: sid}
 	}
@@ -595,7 +595,7 @@ func (u uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return u.placeInFoldMode(n)
 			case "esc":
 				u.folding = nil
-				u.status = "summary kept — p folds it in later"
+				u.status = "summary kept — p places it later"
 				return u, nil
 			case "s", "p":
 				return u, nil
@@ -645,7 +645,7 @@ func (u uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if len(sums) == 0 {
 				// Offered, never forced: say where a summary comes from
 				// rather than refusing the key.
-				u.status = "no summaries yet — s summarises a range, then p folds it back in"
+				u.status = "no summaries yet — s selects a range to squash, then p places it"
 				return u, nil
 			}
 			u.picking, u.pickIdx, u.pickAt = sums, 0, n
@@ -693,7 +693,7 @@ func (u uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // line — so it is stated before the key that commits to it, not after.
 func (u uiModel) pickerView() string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "Fold a summary in at:  %q\n\n", u.pickAt.Node.Title)
+	fmt.Fprintf(&b, "Place a summary at:  %q\n\n", u.pickAt.Node.Title)
 	for i, s := range u.picking {
 		marker := "  "
 		if i == u.pickIdx {
@@ -711,7 +711,7 @@ func (u uiModel) pickerView() string {
 	} else {
 		b.WriteString("Next: merge it here, or branch here.\n")
 	}
-	b.WriteString("\n↑↓ choose   [enter] fold back   [esc] cancel\n")
+	b.WriteString("\n↑↓ choose   [enter] place   [esc] cancel\n")
 	return b.String()
 }
 
@@ -733,7 +733,7 @@ func (u uiModel) View() string {
 		return menuView("Do what with this range?", rangeMenu, u.menuIdx)
 	}
 	if u.menu == "place" {
-		return menuView(fmt.Sprintf("Fold the summary in at:  %q", u.pickAt.Node.Title)+u.folding.note(), placeMenu, u.menuIdx)
+		return menuView(fmt.Sprintf("Place the summary at:  %q", u.pickAt.Node.Title)+u.folding.note(), placeMenu, u.menuIdx)
 	}
 	var b strings.Builder
 	if len(u.m.Rows()) == 0 {
@@ -768,7 +768,7 @@ func (u uiModel) View() string {
 		// so is cheaper than the user discovering that esc no longer closes.
 		b.WriteString("↑↓ move to the range's start  s/⏎ choose what to do  esc cancel range\n")
 	} else {
-		b.WriteString(fmt.Sprintf("↑↓ move  ←→ fold  ⏎ continue  s select  p fold back  L label  a scope:%s  f filter:%s  esc close\n", scope, u.m.Filter))
+		b.WriteString(fmt.Sprintf("↑↓ move  ←→ fold  ⏎ continue  s select  p place a summary  L label  a scope:%s  f filter:%s  esc close\n", scope, u.m.Filter))
 	}
 	if u.busy != "" {
 		b.WriteString(u.busy + "\n")

@@ -410,12 +410,12 @@ func (u uiModel) placeChosen(idx int) (tea.Model, tea.Cmd) {
 	if idx == 1 {
 		turns, entries, size, err := u.a.Preview(src, at.Node.ID)
 		if err != nil {
-			u.status = "cannot fold back here: " + err.Error()
+			u.status = "cannot branch here: " + err.Error()
 			return u, nil
 		}
 		u.confirm = foldBackConfirmText(at, turns, entries, size, u.folding.note())
 		u.pending = u.moving(foldBackCmd(u.a, u.st, at, u.dstCWD(at), sum, u.agentFor(at), u.send), at)
-		u.pendingBusy = "folding back…"
+		u.pendingBusy = "branching…"
 		return u, nil
 	}
 	if !u.liveCheck(at.SessionID) {
