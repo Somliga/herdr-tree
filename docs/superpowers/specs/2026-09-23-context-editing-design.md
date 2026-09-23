@@ -201,20 +201,29 @@ If the summary call fails, nothing is written, hidden or closed.
   session has no record, one is created carrying only this field.
 - `kind` — on the **new** session's record: `compacted`, `cut` or `inserted`.
   Absent means a v2 branch.
+- `replaces` — on the new record: the old session's id.
 - `cut` — for `kind: cut`, the number of turns removed and the uuid of the
-  first entry after the cut (where the marker renders), or of the last entry
-  before it when nothing follows.
+  first entry after the cut (where the marker renders); empty when nothing
+  follows, and the marker then renders on the line's last row.
 
-The new session's record also has `grafted_from` pointing at the old session,
-as every grafted session's does.
+The new record's `grafted_from` is a **copy of the old record's**, not a
+pointer at the old session: the replacement takes the old line's place,
+including where it hung. A compacted branch stays under the trunk turn it
+left; a compacted root stays a root.
+
+`replaced_by` is one-way. `Save`'s merge never lets a record without it
+overwrite one on disk that has it, so a second overlay saving an unrelated
+change cannot un-hide a replaced line.
+
+A session is hidden only if the session it resolves to is present. If the
+replacement's file is gone, the old line shows again rather than vanishing.
 
 ### 5.2 Hiding
 
 A session whose record has `replaced_by` is not rendered. `Discover` still
-finds its file; nothing is deleted. The replacement renders as a root line from
-its first turn, in the old line's place: the existing rule "parent session
-gone → child stays a root" produces this once hidden sessions are treated as
-gone.
+finds its file; nothing is deleted. The replacement renders from its first
+turn in the old line's place, because its record carries the old line's
+`grafted_from` (§5.1).
 
 No "show hidden" toggle is built.
 
