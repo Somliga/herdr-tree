@@ -171,10 +171,10 @@ func confirmText(n *tree.Node, turns, entries int, size int64, dstCWD string) st
 
 // foldBackConfirmText is confirmText's sibling for a fold-back: the same
 // graft, plus one injected turn, so the same figures.
-func foldBackConfirmText(at *tree.Node, turns, entries int, size int64, dstCWD string) string {
+func foldBackConfirmText(at *tree.Node, turns, entries int, size int64) string {
 	return fmt.Sprintf(
-		"Fold the summary in at:  %q\n\nThis starts a NEW session carrying %d turn(s) · %d entries · %s, with the summary appended as its next turn.\nThe original is untouched.\n\nOpens: split right, unfocused in %s\n\n[enter] fold back   [esc] cancel",
-		at.Node.Title, turns, entries, humanBytes(size), dstCWD)
+		"Fold the summary in at:  %q\n\nThis starts a NEW session carrying %d turn(s) · %d entries · %s, with the summary appended as its next turn.\nThe original is untouched.\n\nOpens nothing: ⏎ on the new line opens it.\n\n[enter] fold back   [esc] cancel",
+		at.Node.Title, turns, entries, humanBytes(size))
 }
 
 type uiModel struct {
@@ -219,6 +219,10 @@ type uiModel struct {
 	pickAt  *tree.Node
 	placing store.Summary // the summary chosen in the picker, while the placement menu is open
 
+	// folding is the summary summarise & fold produced, while the user picks
+	// where it goes (§2.7).
+	folding *store.Summary
+
 	labelling *tree.Node // non-nil while typing a label
 	labelText string
 
@@ -230,15 +234,21 @@ type uiModel struct {
 // exists so toggling scope does not lose your place.
 func (u *uiModel) rebuild() {
 	was := u.m.Selected()
+	// Editing the session you are in keeps showing its line (§6.3). Only the
+	// view follows the replacement: messages still go to u.current's agent.
+	scope := u.current
+	if u.st != nil {
+		scope = u.st.Resolve(u.current)
+	}
 	roots := u.roots
 	if !u.scopeAll {
-		if scoped := ScopeTo(u.roots, u.current); scoped != nil {
+		if scoped := ScopeTo(u.roots, scope); scoped != nil {
 			roots = scoped
 		}
 	}
 	rangeEnd := u.m.RangeEnd
 	u.m = New(roots)
-	u.m.SetTrunk(tree.Trunk(u.roots, u.current))
+	u.m.SetTrunk(tree.Trunk(u.roots, scope))
 	// tree.Build runs once, in Run, so a scope toggle re-roots the SAME
 	// nodes — the range's end is still a live pointer and there is no reason
 	// to throw the user's in-progress selection away. If the new scope does
@@ -263,11 +273,13 @@ func (u *uiModel) rebuild() {
 type actionDoneMsg struct {
 	status string
 	quit   bool
-	// reload re-reads the sessions: an edit that opened nothing left the
-	// overlay up, and the tree on screen still shows the old line. from/to
-	// name the replacement, so the scope can follow it.
-	reload   bool
-	from, to string
+	// reload re-reads the sessions: an edit opens nothing, so the overlay is
+	// still up and the tree on screen still shows the old line. tip names the
+	// session whose tip the cursor moves to.
+	reload bool
+	tip    string
+	// fold puts the overlay into fold mode with the summary just made.
+	fold *store.Summary
 }
 
 // resumeCmd and branchCmd run OFF the update loop.
@@ -399,8 +411,6 @@ func foldBackCmd(a adapter.Adapter, st *store.Store, at *tree.Node, dst string, 
 		if err != nil {
 			return actionDoneMsg{status: "fold back failed: " + scrubbed(err, seed)}
 		}
-		// Record the edge before resuming: the transcript now exists, so the
-		// branch must survive even if opening it fails.
 		st.Add(sid, store.Branch{
 			GraftedFrom: store.From{SessionID: at.SessionID, Node: at.Node.ID},
 			Title:       "⤶ " + title(sum.Text, 40),
@@ -409,10 +419,7 @@ func foldBackCmd(a adapter.Adapter, st *store.Store, at *tree.Node, dst string, 
 		if err := st.Save(); err != nil {
 			return actionDoneMsg{status: "folded " + shortID(sid) + ", but the tree was not saved: " + err.Error()}
 		}
-		if err := a.Resume(sid, dst, false); err != nil {
-			return actionDoneMsg{status: "folded " + shortID(sid) + ", but it did not open: " + err.Error()}
-		}
-		return actionDoneMsg{status: "folded into " + shortID(sid), quit: true}
+		return actionDoneMsg{status: "branched " + shortID(sid) + " — ⏎ on it to open it", reload: true, tip: sid}
 	}
 }
 
@@ -446,14 +453,20 @@ func (u uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			u.quitting = true
 			return u, tea.Quit
 		}
+		if msg.fold != nil {
+			u.folding = msg.fold
+		}
 		if msg.reload {
 			if sessions, err := u.a.Discover(u.repoRoot); err == nil {
-				if u.current == msg.from && u.liveAgent == "" {
-					u.current = msg.to
-				}
 				u.roots = tree.Build(sessions, u.st)
 				u.m.RangeEnd = nil
 				u.rebuild()
+				for i, r := range u.m.Rows() {
+					if r.Node.SessionID == msg.tip && r.Node.IsSessionLeaf {
+						u.m.Cursor = i
+						break
+					}
+				}
 			}
 		}
 		return u, nil
@@ -511,16 +524,7 @@ func (u uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "enter":
 				sum, at := u.picking[u.pickIdx], u.pickAt
 				u.picking, u.pickIdx = nil, 0
-				agent := u.agentFor(at)
-				if agent != "" && at.IsSessionLeaf && u.send != nil {
-					// Nothing is copied and nothing is written: the summary
-					// is the next message. There is no cost to show.
-					u.busy = "sending…"
-					return u, foldBackCmd(u.a, u.st, at, u.dstCWD(at), sum, agent, u.send)
-				}
-				u.placing, u.pickAt = sum, at
-				u.menu, u.menuIdx = "place", 0
-				return u, nil
+				return u.foldAt(at, sum)
 			case "esc", "q":
 				u.picking, u.pickAt, u.pickIdx = nil, nil, 0
 			}
@@ -544,10 +548,7 @@ func (u uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				which, idx := u.menu, u.menuIdx
 				u.menu, u.menuIdx = "", 0
 				if which == "range" {
-					if idx == 0 {
-						return u.editConfirm(store.KindCompacted)
-					}
-					return u.editConfirm(store.KindCut)
+					return u.editConfirm([]string{store.KindCompacted, kindFold, store.KindCut}[idx])
 				}
 				return u.placeChosen(idx)
 			case "esc", "q":
@@ -575,6 +576,26 @@ func (u uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				u.confirm, u.pending, u.pendingBusy = "", nil, ""
 			}
 			return u, nil
+		}
+		if u.folding != nil {
+			// Fold mode: the tree moves as usual, ⏎ places the summary, and
+			// s and p stay quiet so there is only one thing in hand.
+			switch msg.String() {
+			case "enter":
+				n := u.m.Selected()
+				if n == nil || n.Broken || n.Node.ID == "" {
+					return u, nil
+				}
+				sum := *u.folding
+				u.folding = nil
+				return u.foldAt(n, sum)
+			case "esc":
+				u.folding = nil
+				u.status = "summary kept — p folds it in later"
+				return u, nil
+			case "s", "p":
+				return u, nil
+			}
 		}
 		switch msg.String() {
 		case "esc":
@@ -634,9 +655,8 @@ func (u uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			if n.IsSessionLeaf {
 				// Already the tip: continuing means resuming, and nothing is
-				// written. No confirmation, because there is nothing to confirm.
-				u.busy = "opening session…"
-				return u, resumeCmd(u.a, n, u.dstCWD(n))
+				// written.
+				return u.openTip(n)
 			}
 			src := adapter.Session{ID: n.SessionID, CWD: n.SessionCWD, Path: n.SessionPath}
 			turns, entries, size, err := u.a.Preview(src, n.Node.ID)
@@ -737,7 +757,9 @@ func (u uiModel) View() string {
 	if u.scopeAll {
 		scope = "all sessions"
 	}
-	if u.m.RangeEnd != nil {
+	if u.folding != nil {
+		b.WriteString("↑↓ move to a turn  ⏎ fold it in here  esc keep it for later\n")
+	} else if u.m.RangeEnd != nil {
 		// While a range is being selected, three keys change meaning. Saying
 		// so is cheaper than the user discovering that esc no longer closes.
 		b.WriteString("↑↓ move to the range's start  s/⏎ choose what to do  esc cancel range\n")

@@ -9,6 +9,7 @@ import (
 
 	"herdr-tree/internal/adapter"
 	"herdr-tree/internal/store"
+	"herdr-tree/internal/tree"
 )
 
 // herdrLog records what the handover asked herdr for, in order.
@@ -73,10 +74,13 @@ func TestARangeOpensAMenuNotACall(t *testing.T) {
 	if cmd != nil || u.menu != "range" {
 		t.Fatalf("want the range menu and no command; menu=%q", u.menu)
 	}
-	for _, want := range []string{"summarise & compact", "cut"} {
-		if !strings.Contains(u.View(), want) {
-			t.Fatalf("menu does not offer %q:\n%s", want, u.View())
+	v, last := u.View(), -1
+	for _, want := range []string{"summarise & continue", "summarise & fold", "cut"} {
+		i := strings.Index(v, want)
+		if i <= last {
+			t.Fatalf("menu does not offer %q after the one before it:\n%s", want, v)
 		}
+		last = i
 	}
 	u, _ = press(t, u, esc)
 	if u.menu != "" || u.m.RangeEnd == nil {
@@ -86,7 +90,7 @@ func TestARangeOpensAMenuNotACall(t *testing.T) {
 
 func TestCutConfirmsOnceThenSplicesAndReplaces(t *testing.T) {
 	fa := &fakeAdapter{span: adapter.Span{First: 2, Last: 3}}
-	u, cmd := press(t, rangeUI(t, fa, &herdrLog{}), enter, down, enter)
+	u, cmd := press(t, rangeUI(t, fa, &herdrLog{}), enter, down, down, enter)
 	if cmd != nil {
 		t.Fatal("cut ran before its confirmation")
 	}
@@ -156,7 +160,7 @@ func TestAFailedSummaryWritesAndClosesNothing(t *testing.T) {
 
 func TestAWorkingAgentIsRefusedAtConfirm(t *testing.T) {
 	fa := &fakeAdapter{span: adapter.Span{First: 2, Last: 3}}
-	u, cmd := press(t, rangeUI(t, fa, &herdrLog{status: []string{"working"}}), enter, down, enter)
+	u, cmd := press(t, rangeUI(t, fa, &herdrLog{status: []string{"working"}}), enter, down, down, enter)
 	if cmd != nil || u.confirm != "" {
 		t.Fatal("a working agent's session reached the confirmation")
 	}
@@ -184,59 +188,9 @@ func TestAnAgentThatStartsWorkingDuringTheSummaryStopsTheSplice(t *testing.T) {
 	}
 }
 
-func TestALiveEditOpensTheNewLineFocusedThenClosesTheOld(t *testing.T) {
-	fa := &fakeAdapter{span: adapter.Span{First: 2, Last: 3}}
-	h := &herdrLog{status: []string{"idle"}}
-	u, _ := press(t, rangeUI(t, fa, h), enter, down, enter)
-	if !strings.Contains(u.confirm, "Text typed but not sent") {
-		t.Fatalf("a live confirmation must warn about the pane closing:\n%s", u.confirm)
-	}
-	_, cmd := press(t, u, enter)
-	msg := cmd().(actionDoneMsg)
-	if fa.resumed != "spliced-sid" || !fa.focused {
-		t.Fatalf("resumed %q focused=%v, want the new line with focus", fa.resumed, fa.focused)
-	}
-	if h.calls[len(h.calls)-1] != "close pane-1" {
-		t.Fatalf("herdr calls %v, want the old pane closed last", h.calls)
-	}
-	if !msg.quit {
-		t.Fatalf("a completed handover leaves: %q", msg.status)
-	}
-}
-
-func TestIfTheNewLineDoesNotOpenTheOldPaneStays(t *testing.T) {
-	fa := &fakeAdapter{span: adapter.Span{First: 2, Last: 3}, resumeErr: errors.New("split refused")}
-	h := &herdrLog{status: []string{"idle"}}
-	u, _ := press(t, rangeUI(t, fa, h), enter, down, enter)
-	_, cmd := press(t, u, enter)
-	msg := cmd().(actionDoneMsg)
-	for _, c := range h.calls {
-		if strings.HasPrefix(c, "close") {
-			t.Fatal("the old pane was closed though the new one never opened")
-		}
-	}
-	if !strings.Contains(msg.status, "old pane left running") || msg.quit {
-		t.Fatalf("status %q quit=%v", msg.status, msg.quit)
-	}
-}
-
-func TestAFailedCloseIsReportedNotUndone(t *testing.T) {
-	fa := &fakeAdapter{span: adapter.Span{First: 2, Last: 3}}
-	h := &herdrLog{status: []string{"idle"}, closeErr: errors.New("no such pane")}
-	u, _ := press(t, rangeUI(t, fa, h), enter, down, enter)
-	_, cmd := press(t, u, enter)
-	msg := cmd().(actionDoneMsg)
-	if !strings.Contains(msg.status, "old pane did not close") || msg.quit {
-		t.Fatalf("status %q quit=%v", msg.status, msg.quit)
-	}
-	if u.st.Branches["s"].ReplacedBy == "" {
-		t.Fatal("a failed close must not undo the replacement")
-	}
-}
-
 func TestHerdrNotAnsweringRefusesTheEdit(t *testing.T) {
 	fa := &fakeAdapter{span: adapter.Span{First: 2, Last: 3}}
-	u, cmd := press(t, rangeUI(t, fa, &herdrLog{liveErr: errors.New("herdr agent list timed out")}), enter, down, enter)
+	u, cmd := press(t, rangeUI(t, fa, &herdrLog{liveErr: errors.New("herdr agent list timed out")}), enter, down, down, enter)
 	if cmd != nil || u.confirm != "" {
 		t.Fatal("an edit went ahead without knowing whether a pane holds the session")
 	}
@@ -308,5 +262,258 @@ func TestBranchHereIsTodaysFoldBack(t *testing.T) {
 	}
 	if fa.focused {
 		t.Fatal("a branch opens beside the user, unfocused")
+	}
+}
+
+func TestFoldConfirmsTheCostAndIsNotRefusedByAWorkingAgent(t *testing.T) {
+	fa := &fakeAdapter{summary: "x", span: adapter.Span{First: 2, Last: 3}}
+	u, cmd := press(t, rangeUI(t, fa, &herdrLog{status: []string{"working"}}), enter, down, enter)
+	if cmd != nil {
+		t.Fatal("fold ran before its confirmation")
+	}
+	for _, want := range []string{"billed", "Nothing is written to this line"} {
+		if !strings.Contains(u.confirm, want) {
+			t.Fatalf("fold confirmation lacks %q (status %q):\n%s", want, u.status, u.confirm)
+		}
+	}
+}
+
+// foldReady runs summarise & fold to the point where the summary has arrived.
+func foldReady(t *testing.T, fa *fakeAdapter, u uiModel) uiModel {
+	t.Helper()
+	u, _ = press(t, u, enter, down, enter)
+	u, cmd := press(t, u, enter)
+	next, _ := u.Update(cmd())
+	return next.(uiModel)
+}
+
+func TestFoldSummarisesThenFoldsInWhereverTheUserPresses(t *testing.T) {
+	fa := &fakeAdapter{summary: "it went well", span: adapter.Span{First: 2, Last: 3}}
+	u := foldReady(t, fa, rangeUI(t, fa, &herdrLog{}))
+	if u.folding == nil || !strings.HasPrefix(u.status, "summary ready") {
+		t.Fatalf("not in fold mode: folding=%v status %q", u.folding, u.status)
+	}
+	if len(fa.spliced) != 0 || len(u.st.AllSummaries()) != 1 {
+		t.Fatalf("fold must store the summary and write nothing: spliced %+v", fa.spliced)
+	}
+	if !strings.Contains(u.View(), "⏎ fold it in here") {
+		t.Fatalf("the footer does not say what ⏎ does:\n%s", u.View())
+	}
+
+	// A non-tip turn: the place menu, for THIS summary.
+	u.m.Cursor = 0
+	u, cmd := press(t, u, enter)
+	if cmd != nil || u.menu != "place" || u.folding != nil {
+		t.Fatalf("want the place menu; menu=%q", u.menu)
+	}
+	u, _ = press(t, u, enter) // insert here
+	_, cmd = press(t, u, enter)
+	cmd()
+	if len(fa.spliced) != 1 || !strings.Contains(fa.spliced[0].Seed, "it went well") {
+		t.Fatalf("insert did not carry the folded summary: %+v", fa.spliced)
+	}
+}
+
+func TestFoldAtTheLiveTipSendsTheSummary(t *testing.T) {
+	fa := &fakeAdapter{summary: "it went well", span: adapter.Span{First: 2, Last: 3}}
+	var sent string
+	u := rangeUI(t, fa, &herdrLog{})
+	u.current, u.liveAgent = "s", "agent-1"
+	u.send = func(_, text string) error { sent = text; return nil }
+	u = foldReady(t, fa, u)
+	u.m.Cursor = 2
+	_, cmd := press(t, u, enter)
+	if cmd == nil {
+		t.Fatal("⏎ at the live tip must send")
+	}
+	cmd()
+	if !strings.Contains(sent, "it went well") {
+		t.Fatalf("sent %q", sent)
+	}
+}
+
+func TestEscInFoldModeKeepsTheSummary(t *testing.T) {
+	fa := &fakeAdapter{summary: "it went well", span: adapter.Span{First: 2, Last: 3}}
+	u, _ := press(t, foldReady(t, fa, rangeUI(t, fa, &herdrLog{})), esc)
+	if u.folding != nil || u.quitting {
+		t.Fatal("esc must leave fold mode, not the overlay")
+	}
+	if len(u.st.AllSummaries()) != 1 || !strings.Contains(u.status, "kept") {
+		t.Fatalf("status %q; the summary must stay stored", u.status)
+	}
+}
+
+func TestAFailedFoldSummaryWritesNothingAndStaysOpen(t *testing.T) {
+	fa := &fakeAdapter{summariseErr: errors.New("claude: limit reached"), span: adapter.Span{First: 2, Last: 3}}
+	u := foldReady(t, fa, rangeUI(t, fa, &herdrLog{}))
+	if u.folding != nil || u.quitting || len(fa.spliced) != 0 || len(u.st.AllSummaries()) != 0 {
+		t.Fatalf("a failed summary entered fold mode or wrote something: %q", u.status)
+	}
+	if !strings.Contains(u.status, "summarise failed") {
+		t.Fatalf("status %q", u.status)
+	}
+}
+
+func TestContinueOnALiveSessionOpensAndClosesNothing(t *testing.T) {
+	fa := &fakeAdapter{summary: "x", span: adapter.Span{First: 2, Last: 3}}
+	h := &herdrLog{status: []string{"idle"}}
+	u, _ := press(t, rangeUI(t, fa, h), enter, enter)
+	if strings.Contains(u.confirm, "Text typed but not sent") {
+		t.Fatalf("an edit closes no pane, so it must not warn of one:\n%s", u.confirm)
+	}
+	_, cmd := press(t, u, enter)
+	msg := cmd().(actionDoneMsg)
+	if fa.resumed != "" {
+		t.Fatalf("an edit opened %q", fa.resumed)
+	}
+	for _, c := range h.calls {
+		if strings.HasPrefix(c, "close") {
+			t.Fatalf("an edit closed a pane: %v", h.calls)
+		}
+	}
+	if !msg.reload || msg.quit || msg.status != "compacted s → spliced- — ⏎ on it to continue there" {
+		t.Fatalf("%+v", msg)
+	}
+}
+
+func TestCutSaysHowManyTurnsWent(t *testing.T) {
+	fa := &fakeAdapter{span: adapter.Span{First: 2, Last: 3}}
+	u, _ := press(t, rangeUI(t, fa, &herdrLog{}), enter, down, down, enter)
+	_, cmd := press(t, u, enter)
+	if msg := cmd().(actionDoneMsg); msg.status != "cut 2 turns from s → spliced- — ⏎ on it to continue there" {
+		t.Fatalf("status %q", msg.status)
+	}
+}
+
+func sessionOf(id string, turns ...string) adapter.Session {
+	s := adapter.Session{ID: id, Title: id, CWD: "/repo", Path: "/transcripts/" + id + ".jsonl"}
+	for _, t := range turns {
+		s.Nodes = append(s.Nodes, adapter.Node{ID: t, Title: "turn " + t, Kind: adapter.KindHuman})
+	}
+	return s
+}
+
+// cutAndReload cuts t2..t3 of s and feeds the result back, with Discover
+// finding the replacement (which gained a turn) and an unrelated session.
+func cutAndReload(t *testing.T, current string) uiModel {
+	t.Helper()
+	fa := &fakeAdapter{span: adapter.Span{First: 2, Last: 3}, sessions: []adapter.Session{
+		sessionOf("s", "t1", "t2", "t3"), sessionOf("spliced-sid", "t1", "t3", "t4"), sessionOf("other", "o1")}}
+	u := rangeUI(t, fa, &herdrLog{})
+	u.current = current
+	u, _ = press(t, u, enter, down, down, enter)
+	u, cmd := press(t, u, enter)
+	next, _ := u.Update(cmd())
+	return next.(uiModel)
+}
+
+func TestAReloadPutsTheCursorOnTheNewLinesTip(t *testing.T) {
+	u := cutAndReload(t, "")
+	if n := u.m.Selected(); n == nil || n.SessionID != "spliced-sid" || !n.IsSessionLeaf {
+		t.Fatalf("cursor on %+v, want the replacement's tip", n)
+	}
+}
+
+func TestScopeFollowsTheReplacementOfTheCurrentSession(t *testing.T) {
+	u := cutAndReload(t, "s")
+	rows := u.m.Rows()
+	if len(rows) == 0 {
+		t.Fatal("nothing on screen")
+	}
+	for _, r := range rows {
+		if r.Node.SessionID != "spliced-sid" {
+			t.Fatalf("scope fell back to all sessions: row of %q", r.Node.SessionID)
+		}
+	}
+}
+
+func TestBranchHereWritesAndOpensNothing(t *testing.T) {
+	fa := &fakeAdapter{}
+	u, _ := press(t, pickUI(t, fa, &herdrLog{}), down, enter)
+	_, cmd := press(t, u, enter)
+	msg := cmd().(actionDoneMsg)
+	if fa.seededWith == "" || fa.resumed != "" {
+		t.Fatalf("branch here must write and open nothing: resumed %q", fa.resumed)
+	}
+	if !msg.reload || msg.quit || msg.status != "branched new-sid — ⏎ on it to open it" {
+		t.Fatalf("%+v", msg)
+	}
+}
+
+// replacedUI shows spliced-sid, which replaced s, with the cursor on its tip.
+func replacedUI(t *testing.T, fa *fakeAdapter, h *herdrLog) uiModel {
+	t.Helper()
+	st := loadedStore(t)
+	st.Replace("s", "spliced-sid", store.Branch{Kind: store.KindCut})
+	roots := tree.Build([]adapter.Session{sessionOf("s", "t1", "t2", "t3"), sessionOf("spliced-sid", "t1", "t3")}, st)
+	u := uiModel{m: New(roots), a: fa, st: st, repoRoot: "/repo", live: h.live,
+		closePane: func(p string) error {
+			if fa.resumed == "" {
+				h.calls = append(h.calls, "close-before-resume")
+			}
+			return h.close(p)
+		}}
+	u.m.Cursor = len(u.m.Rows()) - 1
+	if n := u.m.Selected(); n.SessionID != "spliced-sid" || !n.IsSessionLeaf {
+		t.Fatalf("setup: cursor on %+v", n)
+	}
+	return u
+}
+
+func TestEnterOnAReplacementHandsTheOldPaneOver(t *testing.T) {
+	fa := &fakeAdapter{}
+	h := &herdrLog{status: []string{"idle"}}
+	u, cmd := press(t, replacedUI(t, fa, h), enter)
+	if cmd != nil || !strings.Contains(u.confirm, "text typed but not sent there is lost") {
+		t.Fatalf("want a confirmation first:\n%s", u.confirm)
+	}
+	_, cmd = press(t, u, enter)
+	msg := cmd().(actionDoneMsg)
+	if fa.resumed != "spliced-sid" || !fa.focused {
+		t.Fatalf("resumed %q focused=%v", fa.resumed, fa.focused)
+	}
+	if got := strings.Join(h.calls, ","); got != "live s,close pane-1" {
+		t.Fatalf("herdr calls %s, want the old pane closed after the open", got)
+	}
+	if !msg.quit || msg.status != "opened spliced-, old pane closed" {
+		t.Fatalf("%+v", msg)
+	}
+}
+
+func TestEnterOnAReplacementWhoseOldAgentWorksIsRefused(t *testing.T) {
+	fa := &fakeAdapter{}
+	h := &herdrLog{status: []string{"working"}}
+	u, cmd := press(t, replacedUI(t, fa, h), enter)
+	if cmd != nil || u.confirm != "" || !strings.Contains(u.status, "working") {
+		t.Fatalf("status %q confirm %q", u.status, u.confirm)
+	}
+	if fa.resumed != "" || strings.Contains(strings.Join(h.calls, ","), "close") {
+		t.Fatal("something was opened or closed")
+	}
+}
+
+func TestIfTheReplacementDoesNotOpenTheOldPaneStays(t *testing.T) {
+	fa := &fakeAdapter{resumeErr: errors.New("split refused")}
+	h := &herdrLog{status: []string{"idle"}}
+	u, _ := press(t, replacedUI(t, fa, h), enter)
+	_, cmd := press(t, u, enter)
+	msg := cmd().(actionDoneMsg)
+	if strings.Contains(strings.Join(h.calls, ","), "close") {
+		t.Fatalf("the old pane was closed though the new one never opened: %v", h.calls)
+	}
+	if !strings.Contains(msg.status, "old pane left running") || msg.quit {
+		t.Fatalf("%+v", msg)
+	}
+}
+
+func TestEnterOnAReplacementWithNoOldPaneJustResumes(t *testing.T) {
+	fa := &fakeAdapter{}
+	u, cmd := press(t, replacedUI(t, fa, &herdrLog{}), enter)
+	if cmd == nil || u.confirm != "" {
+		t.Fatalf("want a plain resume, got confirm %q", u.confirm)
+	}
+	cmd()
+	if fa.resumed != "spliced-sid" || fa.focused {
+		t.Fatalf("resumed %q focused=%v, want unfocused", fa.resumed, fa.focused)
 	}
 }

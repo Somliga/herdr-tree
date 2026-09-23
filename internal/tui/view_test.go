@@ -83,10 +83,12 @@ type fakeAdapter struct {
 	span      adapter.Span
 	spliceErr error
 	spliced   []adapter.Edit
+
+	sessions []adapter.Session // what Discover finds on a reload
 }
 
 func (f *fakeAdapter) Name() string                               { return "fake" }
-func (f *fakeAdapter) Discover(string) ([]adapter.Session, error) { return nil, nil }
+func (f *fakeAdapter) Discover(string) ([]adapter.Session, error) { return f.sessions, nil }
 func (f *fakeAdapter) Current(adapter.Pane) (string, error)       { return "", nil }
 func (f *fakeAdapter) Preview(adapter.Session, string) (int, int, int64, error) {
 	return 1, 2, 3, nil
@@ -405,7 +407,7 @@ func TestSummariseStoresTheRangeAndKeepsTheOverlayOpen(t *testing.T) {
 
 	fa := &fakeAdapter{summary: "it went well"}
 	op := editOp{src: adapter.Session{ID: "s"}, kind: store.KindCompacted, summarise: true, from: from, to: to}
-	msg := editCmd(fa, st, op, nil, nil)().(actionDoneMsg)
+	msg := editCmd(fa, st, op, nil)().(actionDoneMsg)
 
 	if msg.quit {
 		t.Fatal("summarising must not close the overlay: nothing has been opened")
@@ -436,7 +438,7 @@ func TestFailedSummariseStoresNothingAndKeepsTheOverlayOpen(t *testing.T) {
 
 	fa := &fakeAdapter{summariseErr: errors.New("claude: credit balance too low")}
 	op := editOp{src: adapter.Session{ID: "s"}, kind: store.KindCompacted, summarise: true, from: from, to: to}
-	msg := editCmd(fa, st, op, nil, nil)().(actionDoneMsg)
+	msg := editCmd(fa, st, op, nil)().(actionDoneMsg)
 
 	if msg.quit {
 		t.Fatal("a failed summarise must not quit: the message would never be seen")
@@ -466,11 +468,11 @@ func TestFoldBackAtAnEarlierTurnSeedsAGraft(t *testing.T) {
 	if !strings.Contains(fa.seededWith, sum.Text) {
 		t.Fatal("the seed lost the summary text")
 	}
-	if fa.resumed != "new-sid" {
-		t.Fatalf("the new session was not opened: resumed %q", fa.resumed)
+	if fa.resumed != "" {
+		t.Fatalf("a fold-back opens nothing (spec §2.5): resumed %q", fa.resumed)
 	}
-	if !msg.quit {
-		t.Fatal("a successful fold-back opens the new session and closes the overlay")
+	if !msg.reload || msg.quit {
+		t.Fatalf("a successful fold-back reloads the tree and stays open: %+v", msg)
 	}
 	if _, ok := st.Branches["new-sid"]; !ok {
 		t.Fatalf("no graft edge recorded: %+v", st.Branches)
@@ -698,7 +700,7 @@ func TestPickerFoldsTheChosenSummaryInAtTheSelectedTurn(t *testing.T) {
 	if after3.(uiModel).confirm != "" {
 		t.Fatal("the confirmation should close once acted on")
 	}
-	if msg := cmd3().(actionDoneMsg); !msg.quit {
+	if msg := cmd3().(actionDoneMsg); !msg.reload {
 		t.Fatalf("want the fold-back to succeed: %q", msg.status)
 	}
 	if !strings.HasPrefix(fa.seededWith, claudeSummaryPrefix) {
@@ -775,7 +777,7 @@ func TestNoStatusLineCarriesTheSummary(t *testing.T) {
 	// summarising, succeeding
 	st := loadedStore(t)
 	op := editOp{src: adapter.Session{ID: "s"}, kind: store.KindCompacted, summarise: true, from: early, to: tip}
-	collect(editCmd(&fakeAdapter{summary: sum.Text}, st, op, nil, nil)())
+	collect(editCmd(&fakeAdapter{summary: sum.Text}, st, op, nil)())
 	// folding back as a graft, succeeding
 	collect(foldBackCmd(&fakeAdapter{}, loadedStore(t), early, "/repo", sum, "", nil)())
 	// folding back as a message, succeeding
