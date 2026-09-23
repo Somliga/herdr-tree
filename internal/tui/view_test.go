@@ -76,6 +76,7 @@ type fakeAdapter struct {
 	seedErr      error
 
 	summarisedFrom, summarisedTo string
+	summarisedCompact            bool
 	seededWith                   string
 	resumed                      string
 	focused                      bool
@@ -105,8 +106,9 @@ func (f *fakeAdapter) Resume(sessionID, _ string, focus bool) error {
 	f.resumed, f.focused = sessionID, focus
 	return f.resumeErr
 }
-func (f *fakeAdapter) Summarise(_ adapter.Session, fromTurn, toTurn string) (string, error) {
+func (f *fakeAdapter) Summarise(_ adapter.Session, fromTurn, toTurn string, compact bool) (string, error) {
 	f.summarisedFrom, f.summarisedTo = fromTurn, toTurn
+	f.summarisedCompact = compact
 	if f.summariseErr != nil {
 		return "", f.summariseErr
 	}

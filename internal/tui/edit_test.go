@@ -133,6 +133,9 @@ func TestCompactSummarisesThenSplicesWithTheSeed(t *testing.T) {
 	if fa.summarisedFrom != "t2" || fa.summarisedTo != "t3" {
 		t.Fatalf("summarised %q..%q", fa.summarisedFrom, fa.summarisedTo)
 	}
+	if !fa.summarisedCompact {
+		t.Fatal("summarise & continue must ask for the compaction prompt")
+	}
 	if len(fa.spliced) != 1 || !strings.HasPrefix(fa.spliced[0].Seed, claudeCompactionPrefix) ||
 		!strings.Contains(fa.spliced[0].Seed, "it went well") {
 		t.Fatalf("splice seed %+v", fa.spliced)
@@ -290,6 +293,9 @@ func TestFoldSummarisesThenFoldsInWhereverTheUserPresses(t *testing.T) {
 	}
 	if len(fa.spliced) != 0 || len(u.st.AllSummaries()) != 1 {
 		t.Fatalf("fold must store the summary and write nothing: spliced %+v", fa.spliced)
+	}
+	if fa.summarisedCompact {
+		t.Fatal("summarise & fold must ask for the ordinary summary prompt, not the compaction one")
 	}
 	if !strings.Contains(u.View(), "⏎ fold it in here") {
 		t.Fatalf("the footer does not say what ⏎ does:\n%s", u.View())
@@ -569,6 +575,27 @@ func TestTheHandoverChecksTheOldPaneAgainBeforeClosingIt(t *testing.T) {
 		t.Fatalf("closed a pane whose agent was working: %v", h.calls)
 	}
 	if msg.quit || msg.status != "opened spliced- — old pane left running: its agent is working" {
+		t.Fatalf("%+v", msg)
+	}
+}
+
+// If the old pane closed on its own between the confirmation and the
+// handover's recheck, live() reports no pane (or a different one) rather
+// than "idle" — the handover is still done, since a new pane is already
+// open, but there is no old pane left to close.
+func TestTheHandoverFindsTheOldPaneAlreadyGone(t *testing.T) {
+	fa := &fakeAdapter{}
+	h := &herdrLog{status: []string{"", "idle", ""}}
+	u, _ := press(t, replacedUI(t, fa, h), enter)
+	_, cmd := press(t, u, enter)
+	msg := cmd().(actionDoneMsg)
+	if fa.resumed != "spliced-sid" {
+		t.Fatalf("resumed %q", fa.resumed)
+	}
+	if strings.Contains(strings.Join(h.calls, ","), "close") {
+		t.Fatalf("closed a pane that was already gone: %v", h.calls)
+	}
+	if !msg.quit || msg.status != "opened spliced- — the old pane is already gone" {
 		t.Fatalf("%+v", msg)
 	}
 }

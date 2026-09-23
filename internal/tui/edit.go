@@ -39,7 +39,7 @@ type editOp struct {
 // the result, so p can fold it in later (§2.6). On failure the status says
 // why and that nothing was written.
 func summariseRange(a adapter.Adapter, st *store.Store, op editOp) (store.Summary, string) {
-	text, err := a.Summarise(op.src, op.from.Node.ID, op.to.Node.ID)
+	text, err := a.Summarise(op.src, op.from.Node.ID, op.to.Node.ID, op.kind == store.KindCompacted)
 	if err != nil {
 		return store.Summary{}, "summarise failed: " + err.Error() + " — nothing was written"
 	}
@@ -130,7 +130,10 @@ func handoverCmd(a adapter.Adapter, sid, dst, old, oldPane string, live LiveFunc
 		if err != nil {
 			return actionDoneMsg{status: "opened " + shortID(sid) + " — old pane left running: " + err.Error()}
 		}
-		if pane != oldPane || busy(status) {
+		if pane != oldPane {
+			return actionDoneMsg{status: "opened " + shortID(sid) + " — the old pane is already gone", quit: true}
+		}
+		if busy(status) {
 			return actionDoneMsg{status: "opened " + shortID(sid) + " — old pane left running: its agent is " + status}
 		}
 		if err := closePane(oldPane); err != nil {

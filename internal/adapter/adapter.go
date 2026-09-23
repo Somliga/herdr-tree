@@ -70,7 +70,7 @@ type Adapter interface {
 	Branch(src Session, atNode, dstCWD string) (newSessionID string, err error)
 	BranchSeeded(src Session, atNode, dstCWD, seed string) (newSessionID string, err error)
 	Resume(sessionID, cwd string, focus bool) error
-	Summarise(src Session, fromTurn, toTurn string) (string, error)
+	Summarise(src Session, fromTurn, toTurn string, compact bool) (string, error)
 	// Widen reports what a range covers once widened to whole turns.
 	Widen(src Session, fromNode, toNode string) (Span, error)
 	// Splice writes a new session with e applied to src's current line. The

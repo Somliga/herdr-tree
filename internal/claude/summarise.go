@@ -35,13 +35,30 @@ Be concise and concrete. Take no actions; reply with the summary text only.`,
 		fromTitle, toTitle)
 }
 
+// CompactPrompt is for a compaction: the text replaces the range in its own
+// line, so it is a handover to the same conversation — current state and
+// exact identifiers first, what comes next last. SummarisePrompt is for a
+// summary carried to another line, where what was rejected matters most.
+func CompactPrompt(fromTitle, toTitle string) string {
+	return fmt.Sprintf(`Compact the part of this conversation from the turn beginning %q up to and including the turn beginning %q. Your text will replace those turns: the conversation continues from it as if they had happened, so write what the continuation needs.
+
+Write short sections:
+- state: where the work stands at the end of the range — files, functions, values and settings that now exist or changed, named exactly.
+- decisions: what was settled and why, including any constraint the user stated.
+- dead ends: what was tried and failed, one line each, so it is not retried.
+- next: what was about to happen next.
+
+Be concise and concrete. Keep exact names, paths, commands and numbers verbatim. Take no actions; reply with the summary text only.`,
+		fromTitle, toTitle)
+}
+
 // Summarise produces a summary of the turns between fromTurn and toTurn.
 //
 // It grafts the source at toTurn into a throwaway session, resumes that with
 // the prompt, captures stdout and removes the throwaway. The graft is needed
 // because --resume always continues at a session's tip: summarising "up to
 // turn 12" must not let the model see turn 13.
-func Summarise(srcPath, fromTurn, toTurn, tmpCWD string) (string, error) {
+func Summarise(srcPath, fromTurn, toTurn, tmpCWD string, compact bool) (string, error) {
 	es, skipped, err := ParseFile(srcPath)
 	if err != nil {
 		return "", err
@@ -109,8 +126,11 @@ func Summarise(srcPath, fromTurn, toTurn, tmpCWD string) (string, error) {
 	defer cancel()
 	fromTitle, toTitle := title(fromTurn), title(toTurn)
 	titles = append(titles, fromTitle, toTitle)
-	cmd := exec.CommandContext(ctx, "claude", "-p", "--resume", sid,
-		SummarisePrompt(fromTitle, toTitle))
+	prompt := SummarisePrompt(fromTitle, toTitle)
+	if compact {
+		prompt = CompactPrompt(fromTitle, toTitle)
+	}
+	cmd := exec.CommandContext(ctx, "claude", "-p", "--resume", sid, prompt)
 	cmd.Dir = tmpCWD
 	cmd.Stdin = nil
 	out, err := cmd.Output()

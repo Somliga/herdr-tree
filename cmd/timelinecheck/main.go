@@ -34,7 +34,7 @@ func summarise(args []string) {
 		usage()
 	}
 	src, from, to, dstCWD := args[0], args[1], args[2], args[3]
-	text, err := claude.Summarise(src, from, to, dstCWD)
+	text, err := claude.Summarise(src, from, to, dstCWD, false)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "summarise:", err)
 		os.Exit(1)

@@ -26,6 +26,23 @@ func TestSummarisePromptNamesBothEnds(t *testing.T) {
 	}
 }
 
+func TestCompactPromptNamesBothEnds(t *testing.T) {
+	p := CompactPrompt("i want to discuss the weather", "good conclusion")
+	for _, want := range []string{
+		"i want to discuss the weather",
+		"good conclusion",
+		"Your text will replace those turns",
+		"next",
+	} {
+		if !strings.Contains(p, want) {
+			t.Fatalf("prompt does not mention %q:\n%s", want, p)
+		}
+	}
+	if strings.Contains(p, "tool") {
+		t.Fatal("the prompt must not invite tool use; it is a -p call")
+	}
+}
+
 //	stubClaude puts a fake `claude` first on PATH. It exercises the real
 // subprocess plumbing — argv, stdin, the timeout, and the removal of the
 // throwaway session — without spending an API call. Everything about the
@@ -68,7 +85,7 @@ func TestSummariseRemovesTheThrowawaySession(t *testing.T) {
 			t.Setenv("CLAUDE_PROJECTS_DIR", projects)
 			stubClaude(t, c.script)
 
-			_, err := Summarise("testdata/simple.jsonl", "u1", "u3", t.TempDir())
+			_, err := Summarise("testdata/simple.jsonl", "u1", "u3", t.TempDir(), false)
 			if c.wantErr != (err != nil) {
 				t.Fatalf("err = %v, wantErr %v", err, c.wantErr)
 			}
@@ -82,7 +99,7 @@ func TestSummariseRemovesTheThrowawaySession(t *testing.T) {
 func TestSummarisePassesThePromptAsOneArgument(t *testing.T) {
 	t.Setenv("CLAUDE_PROJECTS_DIR", t.TempDir())
 	argvFile := stubClaude(t, `echo ok`)
-	if _, err := Summarise("testdata/simple.jsonl", "u1", "u3", t.TempDir()); err != nil {
+	if _, err := Summarise("testdata/simple.jsonl", "u1", "u3", t.TempDir(), false); err != nil {
 		t.Fatal(err)
 	}
 	b, err := os.ReadFile(argvFile)
@@ -97,6 +114,52 @@ func TestSummarisePassesThePromptAsOneArgument(t *testing.T) {
 	// holds — never a shell string.
 	if !strings.Contains(args[3], "Summarise only the part") {
 		t.Fatalf("the prompt is not the fourth argument: %q", args[3])
+	}
+}
+
+// compact chooses CompactPrompt over SummarisePrompt: the two are for
+// different destinations (replacing the range in place vs. carried to
+// another line) and must not blend.
+func TestSummariseCompactSendsTheCompactPrompt(t *testing.T) {
+	t.Setenv("CLAUDE_PROJECTS_DIR", t.TempDir())
+	argvFile := stubClaude(t, `echo ok`)
+	if _, err := Summarise("testdata/simple.jsonl", "u1", "u3", t.TempDir(), true); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(argvFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := strings.Split(strings.TrimSuffix(string(b), "\x00"), "\x00")
+	if len(args) != 4 {
+		t.Fatalf("argv = %q", args)
+	}
+	prompt := args[3]
+	if !strings.Contains(prompt, "Your text will replace those turns") {
+		t.Fatalf("compact=true did not send CompactPrompt: %q", prompt)
+	}
+	if !strings.Contains(prompt, "first question") {
+		t.Fatalf("the compact prompt does not name the range's start: %q", prompt)
+	}
+}
+
+func TestSummariseNonCompactSendsTheSummarisePrompt(t *testing.T) {
+	t.Setenv("CLAUDE_PROJECTS_DIR", t.TempDir())
+	argvFile := stubClaude(t, `echo ok`)
+	if _, err := Summarise("testdata/simple.jsonl", "u1", "u3", t.TempDir(), false); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(argvFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := strings.Split(strings.TrimSuffix(string(b), "\x00"), "\x00")
+	prompt := args[3]
+	if !strings.Contains(prompt, "rejected:") {
+		t.Fatalf("compact=false did not send SummarisePrompt: %q", prompt)
+	}
+	if strings.Contains(prompt, "Your text will replace those turns") {
+		t.Fatal("compact=false must not send the compact prompt")
 	}
 }
 
@@ -130,7 +193,7 @@ func TestSummariseRunsOutsideTheSessionsOwnProjectDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := New().Summarise(adapter.Session{ID: sid, CWD: repo}, "u1", "u3"); err != nil {
+	if _, err := New().Summarise(adapter.Session{ID: sid, CWD: repo}, "u1", "u3", false); err != nil {
 		t.Fatal(err)
 	}
 
@@ -154,7 +217,7 @@ func TestSummariseErrorDoesNotRepeatTheTurnTitles(t *testing.T) {
 	// way a CLI complaining about its arguments would.
 	stubClaude(t, `printf 'bad argument: %s\n' "$4" >&2; exit 1`)
 
-	_, err := Summarise("testdata/simple.jsonl", "u1", "u3", t.TempDir())
+	_, err := Summarise("testdata/simple.jsonl", "u1", "u3", t.TempDir(), false)
 	if err == nil {
 		t.Fatal("want an error")
 	}
@@ -174,7 +237,7 @@ func TestSummariseLeavesNoProjectDirectoryBehind(t *testing.T) {
 	stubClaude(t, `echo "attempted: x"`)
 
 	for i := 0; i < 3; i++ {
-		if _, err := Summarise("testdata/simple.jsonl", "u1", "u3", t.TempDir()); err != nil {
+		if _, err := Summarise("testdata/simple.jsonl", "u1", "u3", t.TempDir(), false); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -199,7 +262,7 @@ func TestSummariseRemovesTheProjectDirEvenWithAMemoryDir(t *testing.T) {
 	t.Setenv("CLAUDE_PROJECTS_DIR", projects)
 	cwd := t.TempDir()
 	 stubClaude(t, `mkdir -p `+filepath.Join(projects, SlugFor(cwd), "memory")+`; echo ok`)
-	if _, err := Summarise("testdata/simple.jsonl", "u1", "u3", cwd); err != nil {
+	if _, err := Summarise("testdata/simple.jsonl", "u1", "u3", cwd, false); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(projects, SlugFor(cwd))); !os.IsNotExist(err) {
@@ -233,7 +296,7 @@ func TestSummariseCleanupRemovesNothingItDidNotCreate(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := Summarise("testdata/simple.jsonl", "u1", "u3", cwd); err != nil {
+	if _, err := Summarise("testdata/simple.jsonl", "u1", "u3", cwd, false); err != nil {
 		t.Fatal(err)
 	}
 
@@ -261,7 +324,7 @@ func TestSummariseReadsTheWholeEndTurn(t *testing.T) {
 	}
 	defer func() { summariseGraftHook = nil }()
 	stubClaude(t, "echo summary")
-	if _, err := Summarise("testdata/simple.jsonl", "u1", "u3", t.TempDir()); err != nil {
+	if _, err := Summarise("testdata/simple.jsonl", "u1", "u3", t.TempDir(), false); err != nil {
 		t.Fatal(err)
 	}
 	if grafted != "a3" {

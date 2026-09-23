@@ -75,7 +75,7 @@ func (claudeAdapter) BranchSeeded(src adapter.Session, atNode, dstCWD, seed stri
 	return sid, err
 }
 
-func (claudeAdapter) Summarise(src adapter.Session, fromTurn, toTurn string) (string, error) {
+func (claudeAdapter) Summarise(src adapter.Session, fromTurn, toTurn string, compact bool) (string, error) {
 	// Deliberately NOT src.CWD. Summarise grafts a throwaway session into the
 	// project directory derived from the cwd it is handed, and Discover scans
 	// that same directory. Interrupting a summarise is allowed — ctrl+c
@@ -93,7 +93,7 @@ func (claudeAdapter) Summarise(src adapter.Session, fromTurn, toTurn string) (st
 		return "", err
 	}
 	defer os.RemoveAll(tmp)
-	return Summarise(sourcePath(src), fromTurn, toTurn, tmp)
+	return Summarise(sourcePath(src), fromTurn, toTurn, tmp, compact)
 }
 
 func (claudeAdapter) Widen(src adapter.Session, fromNode, toNode string) (adapter.Span, error) {
