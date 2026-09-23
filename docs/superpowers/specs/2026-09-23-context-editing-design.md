@@ -287,6 +287,17 @@ away, the branch renders as a root line marked `from a removed stretch`.
 
 Stored edges are never rewritten; resolution happens when the tree is built.
 
+### 5.3b A branch renders from where it diverges
+
+A grafted session carries copies of every turn up to its graft point, with the
+same uuids. When it is attached under a turn, its leading turns whose ids are
+also in the line it hangs from are not rendered again — the branch's first row
+is its first turn of its own, carrying `↳ <session id>`. A branch with no turn
+of its own yet (opened, nothing typed) keeps one row: its copy of the graft
+point, so it stays visible and `⏎` opens it. Labels on those hidden copies do
+not show; labels on the parent's turns are unaffected. A line that replaced
+another (§5.2) is not attached under anything and is unaffected.
+
 ### 5.4 Markers
 
 - **Drop**: the row after the drop shows `✂ <n> turns dropped` in the muted
