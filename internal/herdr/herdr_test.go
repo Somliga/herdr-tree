@@ -141,8 +141,8 @@ func TestRefusesArgumentsThatWouldBeReadAsFlags(t *testing.T) {
 }
 
 func TestAgentPromptArgv(t *testing.T) {
-	got := strings.Join(agentPromptArgv("tree-60c5b417-wap2", "⤶ summary of abc\n\ntext"), "\u0000")
-	want := strings.Join([]string{"agent", "prompt", "tree-60c5b417-wap2", "⤶ summary of abc\n\ntext", "--wait", "--timeout", "120000"}, "\u0000")
+	got := strings.Join(agentPromptArgv("tree-60c5b417-wap2", "⤶ merged from abc\n\ntext"), "\u0000")
+	want := strings.Join([]string{"agent", "prompt", "tree-60c5b417-wap2", "⤶ merged from abc\n\ntext", "--wait", "--timeout", "120000"}, "\u0000")
 	if got != want {
 		t.Fatalf("\n got %q\nwant %q", got, want)
 	}
@@ -237,7 +237,7 @@ func TestRunTimeoutOmitsArgvContent(t *testing.T) {
 	timeout, agentPromptWait, agentPromptSlack = 20*time.Millisecond, 20*time.Millisecond, 0
 	t.Cleanup(func() { timeout, agentPromptWait, agentPromptSlack = old, oldWait, oldSlack })
 
-	secret := "⤶ summary of abc\n\nthe user's private conversation text"
+	secret := "⤶ merged from abc\n\nthe user's private conversation text"
 	err := AgentPrompt("tree-abc", secret)
 	if err == nil {
 		t.Fatal("want a timeout error")
@@ -411,7 +411,7 @@ func TestAgentPromptUsesItsOwnBudgetNotTheDefault(t *testing.T) {
 	timeout, agentPromptWait, agentPromptSlack = 20*time.Millisecond, 2*time.Second, time.Second
 	t.Cleanup(func() { timeout, agentPromptWait, agentPromptSlack = old, oldWait, oldSlack })
 
-	if err := AgentPrompt("tree-abc", "⤶ summary of abc\n\nbody"); err != nil {
+	if err := AgentPrompt("tree-abc", "⤶ merged from abc\n\nbody"); err != nil {
 		t.Fatalf("agent prompt fell back to the default budget: %v", err)
 	}
 }

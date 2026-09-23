@@ -54,7 +54,7 @@ func summariseRange(a adapter.Adapter, st *store.Store, op editOp) (store.Summar
 	return sum, ""
 }
 
-// foldMove is fold mode's hand: the summary, and the cut of the range it was
+// foldMove is fold mode's hand: the summary, and the drop of the range it was
 // made from, written once the summary has landed (§2.7).
 type foldMove struct {
 	sum         store.Summary
@@ -67,10 +67,10 @@ func (mv *foldMove) note() string {
 	if mv == nil {
 		return ""
 	}
-	return fmt.Sprintf("\n…and turns %d–%d are cut from %s", mv.first, mv.last, shortID(mv.cut.src.ID))
+	return fmt.Sprintf("\n…and turns %d–%d are dropped from %s", mv.first, mv.last, shortID(mv.cut.src.ID))
 }
 
-// foldCmd is summarise & fold: the summary is made and stored, and the
+// foldCmd is squash into…: the summary is made and stored, and the
 // overlay then waits in fold mode for the user to say where it goes (§2.7).
 func foldCmd(a adapter.Adapter, st *store.Store, op editOp, mv foldMove) tea.Cmd {
 	return func() tea.Msg {
@@ -79,14 +79,15 @@ func foldCmd(a adapter.Adapter, st *store.Store, op editOp, mv foldMove) tea.Cmd
 			return actionDoneMsg{status: failed}
 		}
 		mv.sum = sum
-		return actionDoneMsg{status: "summary ready — move to a turn and press ⏎ to fold it in · esc keeps it for later (p)", fold: &mv}
+		return actionDoneMsg{status: "summary ready — move to a turn and press ⏎ to merge it in · esc keeps it for later (p)", fold: &mv}
 	}
 }
 
-// cutAfter runs fold and, only if it landed, cuts mv's range from its source.
-// The fold comes first: if the cut then fails, the stretch is in two places,
-// never in none. target is the session the user folded into. The cut is
-// editCmd's, so the source's agent is asked again right before it (§6.1).
+// cutAfter runs fold and, only if it landed, drops mv's range from its
+// source. The fold comes first: if the drop then fails, the stretch is in two
+// places, never in none. target is the session the user squashed into. The
+// drop is editCmd's, so the source's agent is asked again right before it
+// (§6.1).
 func cutAfter(fold tea.Cmd, a adapter.Adapter, st *store.Store, mv foldMove, target string, live LiveFunc) tea.Cmd {
 	return func() tea.Msg {
 		msg := fold().(actionDoneMsg)
@@ -101,11 +102,11 @@ func cutAfter(fold tea.Cmd, a adapter.Adapter, st *store.Store, mv foldMove, tar
 			if tip == "" {
 				tip = target
 			}
-			return actionDoneMsg{status: "folded into " + shortID(target) + ", but the source was not cut: " + scrubbed(errors.New(cut.status), mv.sum.Text), reload: true, tip: tip}
+			return actionDoneMsg{status: "squashed into " + shortID(target) + ", but the source was not dropped: " + scrubbed(errors.New(cut.status), mv.sum.Text), reload: true, tip: tip}
 		}
-		// "cut n turns from <src> → <new>", without the pointer to the cut
-		// line: the cursor lands on the fold's result.
-		msg.status = "folded into " + shortID(target) + ", " + strings.TrimSuffix(cut.status, continueThere)
+		// "dropped n turns from <src> → <new>", without the pointer to the
+		// drop: the cursor lands on the fold's result.
+		msg.status = "squashed into " + shortID(target) + ", " + strings.TrimSuffix(cut.status, continueThere)
 		return msg
 	}
 }
@@ -120,6 +121,21 @@ func (u uiModel) moving(fold tea.Cmd, at *tree.Node) tea.Cmd {
 }
 
 const continueThere = " — ⏎ on it to continue there"
+
+// verb names op.kind for status text and confirmations, in git vocabulary:
+// squash, drop, merge. The store kind itself (store.KindCompacted etc.) is
+// unchanged — it is not shown, so only its display name moves.
+func verb(kind string) string {
+	switch kind {
+	case store.KindCompacted:
+		return "squashed"
+	case store.KindCut:
+		return "drop"
+	case store.KindInserted:
+		return "merged"
+	}
+	return kind
+}
 
 // editCmd runs an edit to completion or to its first failure, in the order
 // the spec fixes (§6.1). Each step runs only if the one before succeeded, and
@@ -155,7 +171,7 @@ func editCmd(a adapter.Adapter, st *store.Store, op editOp, live LiveFunc) tea.C
 		}
 		res, err := a.Splice(op.src, op.edit, op.dst)
 		if err != nil {
-			return actionDoneMsg{status: op.kind + " failed: " + scrubbed(err, op.edit.Seed)}
+			return actionDoneMsg{status: verb(op.kind) + " failed: " + scrubbed(err, op.edit.Seed)}
 		}
 		b := store.Branch{Kind: op.kind, Title: op.title, CreatedAt: time.Now().UTC()}
 		if op.kind == store.KindCut {
@@ -163,11 +179,11 @@ func editCmd(a adapter.Adapter, st *store.Store, op editOp, live LiveFunc) tea.C
 		}
 		st.Replace(op.src.ID, res.SessionID, b)
 		if err := st.Save(); err != nil {
-			return actionDoneMsg{status: op.kind + " into " + shortID(res.SessionID) + ", but the tree was not saved: " + err.Error()}
+			return actionDoneMsg{status: verb(op.kind) + " into " + shortID(res.SessionID) + ", but the tree was not saved: " + err.Error()}
 		}
-		what := op.kind
+		what := verb(op.kind)
 		if op.kind == store.KindCut {
-			what = fmt.Sprintf("cut %d turns from", res.Removed)
+			what = fmt.Sprintf("dropped %d turns from", res.Removed)
 		}
 		return actionDoneMsg{status: what + " " + shortID(op.src.ID) + " → " + shortID(res.SessionID) + continueThere,
 			reload: true, tip: res.SessionID}
@@ -232,7 +248,7 @@ func (u uiModel) openTip(n *tree.Node) (tea.Model, tea.Cmd) {
 				u.status = "the old line's agent is " + status + " — wait for it to finish"
 				return u, nil
 			}
-			u.confirm = fmt.Sprintf("Continue on the new line:  %q\n\nThe pane running the old line is closed; text typed but not sent there is lost.\n\n[enter] continue   [esc] back", n.Node.Title)
+			u.confirm = fmt.Sprintf("Check out the new line:  %q\n\nThe pane running the old line is closed; text typed but not sent there is lost.\n\n[enter] continue   [esc] back", n.Node.Title)
 			u.pending, u.pendingBusy = handoverCmd(u.a, n.SessionID, u.dstCWD(n), old, pane, u.live, u.closePane), "opening session…"
 			return u, nil
 		}
@@ -243,12 +259,12 @@ func (u uiModel) openTip(n *tree.Node) (tea.Model, tea.Cmd) {
 
 const replacesLine = "A new session replaces this line in the tree (the old one is hidden, kept on disk)."
 
-// kindFold names summarise & fold in editConfirm. It is not a store kind:
+// kindFold names squash into… in editConfirm. It is not a store kind:
 // fold writes nothing to the line it summarises.
 const kindFold = "fold"
 
 // editConfirm raises the one confirmation for a range option (§2.3). kind is
-// store.KindCompacted (summarise & continue), kindFold or store.KindCut.
+// store.KindCompacted (squash), kindFold (squash into…) or store.KindCut (drop).
 func (u uiModel) editConfirm(kind string) (tea.Model, tea.Cmd) {
 	from, to, ok := u.m.RangeSpan()
 	if !ok {
@@ -272,16 +288,16 @@ func (u uiModel) editConfirm(kind string) (tea.Model, tea.Cmd) {
 		return u, nil
 	}
 	op := editOp{src: src, edit: adapter.Edit{From: from.Node.ID, To: to.Node.ID}, kind: kind,
-		from: from, to: to, dst: u.dstCWD(to), title: "✂ cut"}
+		from: from, to: to, dst: u.dstCWD(to), title: "✂ drop"}
 	if kind == store.KindCut {
-		text := fmt.Sprintf("Cut turns %d–%d:\n\n  from  %q\n  to    %q\n\nRemoves turns %d–%d. Costs nothing. No note is left in the conversation.\n%s",
+		text := fmt.Sprintf("Drop turns %d–%d:\n\n  from  %q\n  to    %q\n\nRemoves turns %d–%d. Costs nothing. No note is left in the conversation.\n%s",
 			sp.First, sp.Last, from.Node.Title, to.Node.Title, sp.First, sp.Last, replacesLine)
 		u.confirm = text + "\n\n[enter] go   [esc] back"
-		u.pending, u.pendingBusy = editCmd(u.a, u.st, op, u.live), "cutting…"
+		u.pending, u.pendingBusy = editCmd(u.a, u.st, op, u.live), "dropping…"
 		return u, nil
 	}
 	if kind == kindFold && sp.First <= 1 && sp.Last >= sp.Turns {
-		u.status = "a fold must leave something behind — use p or branch here to copy a whole line"
+		u.status = "a squash into… must leave something behind — use p or branch here to copy a whole line"
 		return u, nil
 	}
 	turns, entries, size, err := u.a.Preview(src, sp.End)
@@ -289,11 +305,11 @@ func (u uiModel) editConfirm(kind string) (tea.Model, tea.Cmd) {
 		u.status = "cannot summarise this range: " + err.Error()
 		return u, nil
 	}
-	heading, then := "continue", fmt.Sprintf("turns %d–%d are replaced by the summary.\n%s", sp.First, sp.Last, replacesLine)
+	heading, then := "Squash", fmt.Sprintf("turns %d–%d are replaced by the summary.\n%s", sp.First, sp.Last, replacesLine)
 	if kind == kindFold {
-		heading, then = "fold", fmt.Sprintf("you choose where to fold it in. When you do, turns %d–%d are cut from this line.", sp.First, sp.Last)
+		heading, then = "Squash into…", fmt.Sprintf("you choose where to merge it in. When you do, turns %d–%d are dropped from this line.", sp.First, sp.Last)
 	}
-	text := fmt.Sprintf("Summarise & %s turns %d–%d:\n\n  from  %q\n  to    %q\n\nThe model reads this session up to the end of the range — %d turn(s) · %d entries · %s — and describes only the range. That whole prefix is billed.\n\nThen: %s",
+	text := fmt.Sprintf("%s turns %d–%d:\n\n  from  %q\n  to    %q\n\nThe model reads this session up to the end of the range — %d turn(s) · %d entries · %s — and describes only the range. That whole prefix is billed.\n\nThen: %s",
 		heading, sp.First, sp.Last, from.Node.Title, to.Node.Title, turns, entries, humanBytes(size), then)
 	u.confirm = text + "\n\n[enter] go   [esc] back"
 	op.summarise = true
@@ -325,8 +341,12 @@ func (u *uiModel) liveCheck(sessionID string) bool {
 	return true
 }
 
-var rangeMenu = []string{"summarise & continue", "summarise & fold", "cut"}
-var placeMenu = []string{"insert here", "branch here"}
+var rangeMenu = []string{
+	"squash — replace these turns with a summary",
+	"squash into… — summarise, put it in another line, drop it here",
+	"drop — remove these turns",
+}
+var placeMenu = []string{"merge here", "branch here"}
 
 func menuView(heading string, options []string, idx int) string {
 	s := heading + "\n\n"
@@ -364,7 +384,7 @@ func (u uiModel) openRangeMenu() (tea.Model, tea.Cmd) {
 func (u uiModel) placeInFoldMode(at *tree.Node) (tea.Model, tea.Cmd) {
 	src := u.folding.cut.src.ID
 	if at.SessionID == src {
-		u.status = "fold into another line — use continue for this one"
+		u.status = "merge into another line — use squash for this one"
 		return u, nil
 	}
 	if u.live != nil {
@@ -381,7 +401,7 @@ func (u uiModel) placeInFoldMode(at *tree.Node) (tea.Model, tea.Cmd) {
 	return u.foldAt(at, u.folding.sum)
 }
 
-// placeChosen acts on the placement menu. Insert rewrites the line in place
+// placeChosen acts on the placement menu. Merge rewrites the line in place
 // and hides the old one; branch is v2's seeded graft and leaves both visible.
 func (u uiModel) placeChosen(idx int) (tea.Model, tea.Cmd) {
 	at, sum := u.pickAt, u.placing
@@ -403,16 +423,16 @@ func (u uiModel) placeChosen(idx int) (tea.Model, tea.Cmd) {
 	}
 	sp, err := u.a.Widen(src, at.Node.ID, at.Node.ID)
 	if err != nil {
-		u.status = "cannot insert here: " + err.Error()
+		u.status = "cannot merge here: " + err.Error()
 		return u, nil
 	}
-	// Nothing is removed, so nothing contracted: an insert is always marked as
+	// Nothing is removed, so nothing contracted: a merge is always marked as
 	// knowledge arriving, whatever session the summary came from.
 	seed := foldBackSeed(at, sum, false)
 	op := editOp{src: src, edit: adapter.Edit{After: at.Node.ID, Seed: seed}, kind: store.KindInserted,
 		dst: u.dstCWD(at), title: "⤶ " + title(sum.Text, 40)}
-	u.confirm = fmt.Sprintf("Insert the summary after turn %d:  %q\n\nEverything after it is kept. Costs nothing.\n%s%s\n\n[enter] insert   [esc] back", sp.Last, at.Node.Title, replacesLine, u.folding.note())
-	u.pending, u.pendingBusy = u.moving(editCmd(u.a, u.st, op, u.live), at), "inserting…"
+	u.confirm = fmt.Sprintf("Merge the summary after turn %d:  %q\n\nEverything after it is kept. Costs nothing.\n%s%s\n\n[enter] merge   [esc] back", sp.Last, at.Node.Title, replacesLine, u.folding.note())
+	u.pending, u.pendingBusy = u.moving(editCmd(u.a, u.st, op, u.live), at), "merging…"
 	return u, nil
 }
 

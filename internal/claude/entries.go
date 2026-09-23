@@ -13,8 +13,8 @@ import (
 // them is more convenient to parse, but Claude Code has never been asked to
 // accept a field it does not recognise, so nothing may depend on it.
 const (
-	SummaryPrefix    = "⤶ summary of"
-	CompactionPrefix = "⤶ compacted"
+	SummaryPrefix    = "⤶ merged from"
+	CompactionPrefix = "⤶ squashed"
 )
 
 var injected = []string{

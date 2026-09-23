@@ -25,8 +25,8 @@ type Node struct {
 	Grafted       bool // this node starts a session branched from its parent
 	Broken        bool // session present but unreadable or empty
 	FromRemoved   bool // a branch whose turn was removed from the line it left
-	CutHere       int  // turns cut immediately before this entry
-	CutAfter      int  // turns cut after this entry, which ends its line
+	CutHere       int  // turns dropped immediately before this entry
+	CutAfter      int  // turns dropped after this entry, which ends its line
 	Label         string
 	// IsHead marks a section head: a human prompt, or the first entry of a
 	// session that does not start with one. Everything until the next head is

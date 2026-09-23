@@ -26,8 +26,8 @@ func shortID(s string) string {
 // package boundary is worth more. A test in cmd/herdr-tree, which imports
 // both, asserts the two pairs agree.
 const (
-	claudeSummaryPrefix    = "⤶ summary of"
-	claudeCompactionPrefix = "⤶ compacted"
+	claudeSummaryPrefix    = "⤶ merged from"
+	claudeCompactionPrefix = "⤶ squashed"
 )
 
 // SummaryPrefix and CompactionPrefix expose those copies to cmd/herdr-tree,
@@ -109,7 +109,7 @@ func renderRow(r Row, selected bool, currentSession string, width int) (string, 
 		// No prefix here: the title IS the seed's first line, which begins
 		// with ⤶ by construction — Classify only assigns these kinds when
 		// that prefix is present, and GraftSeeded refuses a seed without it.
-		// Prepending another produced "⤶ ⤶ summary of …".
+		// Prepending another produced "⤶ ⤶ merged from …".
 	default:
 		if !r.Node.IsSessionRoot {
 			b.WriteString("user: ")
@@ -153,10 +153,10 @@ func renderRow(r Row, selected bool, currentSession string, width int) (string, 
 // whatever the row's own style (spec §5.4). "" when the row has none.
 func cutNote(n *tree.Node) string {
 	if n.CutHere > 0 {
-		return fmt.Sprintf("   ✂ %d turns cut before this", n.CutHere)
+		return fmt.Sprintf("   ✂ %d turns dropped before this", n.CutHere)
 	}
 	if n.CutAfter > 0 {
-		return fmt.Sprintf("   ✂ %d turns cut after this", n.CutAfter)
+		return fmt.Sprintf("   ✂ %d turns dropped after this", n.CutAfter)
 	}
 	return ""
 }
@@ -219,7 +219,7 @@ type uiModel struct {
 	pickAt  *tree.Node
 	placing store.Summary // the summary chosen in the picker, while the placement menu is open
 
-	// folding is summarise & fold's move while the user picks where its
+	// folding is squash into…'s move while the user picks where its
 	// summary goes (§2.7); it stays through the place menu and confirmation,
 	// so backing out of either returns to fold mode.
 	folding *foldMove
@@ -384,7 +384,7 @@ func foldBackSeed(at *tree.Node, sum store.Summary, rewinding bool) string {
 func scrubbed(err error, seed string) string {
 	cause := err.Error()
 	for _, line := range strings.Split(seed, "\n") {
-		// Short lines are dropped: a blank line or a bare "⤶ compacted t1..t2"
+		// Short lines are dropped: a blank line or a bare "⤶ squashed t1..t2"
 		// matches too much of ordinary prose to be worth cutting.
 		if line = strings.TrimSpace(line); len(line) >= 12 {
 			cause = strings.ReplaceAll(cause, line, "…")
@@ -709,7 +709,7 @@ func (u uiModel) pickerView() string {
 	if agent := u.agentFor(u.pickAt); agent != "" && u.pickAt.IsSessionLeaf && u.send != nil {
 		fmt.Fprintf(&b, "Sends it to %s as your next message. Nothing is copied.\n", agent)
 	} else {
-		b.WriteString("Next: insert it here, or branch here.\n")
+		b.WriteString("Next: merge it here, or branch here.\n")
 	}
 	b.WriteString("\n↑↓ choose   [enter] fold back   [esc] cancel\n")
 	return b.String()
@@ -762,7 +762,7 @@ func (u uiModel) View() string {
 		scope = "all sessions"
 	}
 	if u.folding != nil {
-		b.WriteString("↑↓ move to a turn  ⏎ fold it in here  esc keep it for later\n")
+		b.WriteString("↑↓ move to a turn  ⏎ merge it in here  esc keep it for later\n")
 	} else if u.m.RangeEnd != nil {
 		// While a range is being selected, three keys change meaning. Saying
 		// so is cheaper than the user discovering that esc no longer closes.

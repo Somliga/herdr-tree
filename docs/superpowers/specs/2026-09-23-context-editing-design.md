@@ -8,6 +8,14 @@ which stands unchanged except where noted in §9.
 
 ---
 
+## 0. Vocabulary
+
+User-visible terms follow git: **squash** replaces a range with its summary,
+**drop** removes a range outright, **merge** places a stored summary at a
+turn, **branch** starts a new line, and **checkout** moves onto a
+replacement. `rebase` is deliberately unused: nothing here replays turns onto
+another base.
+
 ## 1. The model
 
 v2 could produce a summary and place it, but placing it at a turn always
@@ -18,12 +26,12 @@ picked by hand, one turn before the range.
 
 v3 lets the user edit a line's context directly. Select a range, then:
 
-- **summarise & compact** — the range is replaced by its summary;
-- **cut** — the range is removed.
+- **squash** — the range is replaced by its summary;
+- **drop** — the range is removed.
 
 And `p`, folding a stored summary in at a turn, gains:
 
-- **insert here** — the summary goes in after that turn and everything after
+- **merge here** — the summary goes in after that turn and everything after
   it is kept.
 
 All three are one operation: **splice**. Keep the line up to its tip, drop a
@@ -34,9 +42,9 @@ place, and re-attach what followed.
 before   t1 ── t2 ── t3 ── t4 ── t5 ── t6          ← tip
                       └── range ──┘
 
-compact  t1 ── t2 ── ⤶ compacted t3..t5 ── t6
-cut      t1 ── t2 ── t6                              (tree shows ✂ 3 turns cut)
-insert   t1 ── t2 ── ⤶ summary of … ── t3 ── … ── t6  (insert after t2)
+squash   t1 ── t2 ── ⤶ squashed t3..t5 ── t6
+drop     t1 ── t2 ── t6                              (tree shows ✂ 3 turns dropped)
+merge    t1 ── t2 ── ⤶ merged from … ── t3 ── … ── t6  (merge after t2)
 ```
 
 A splice writes a **new session** and **replaces** the old line with it: the
@@ -56,15 +64,15 @@ footer reads `s select` rather than `s summarise`.
 With a range fixed, `⏎` opens a menu over it:
 
 ```
-summarise & continue · summarise & fold · cut · esc back
+squash · squash into… · drop · esc back
 ```
 
-- **summarise & continue** — the range is replaced by its summary in its own
+- **squash** — the range is replaced by its summary in its own
   line (a compaction).
-- **summarise & fold** — a move: the range is summarised, the user chooses
-  where to fold the summary in, and only then is the range cut from its own
-  line (§2.7).
-- **cut** — the range is removed.
+- **squash into…** — a move: the range is summarised, the user chooses
+  where to merge the summary in, and only then is the range dropped from its
+  own line (§2.7).
+- **drop** — the range is removed.
 
 **No edit opens a pane.** Every edit only writes; the tree reloads with the
 cursor on the result, and moving there is the user's own `⏎` (§6).
@@ -75,13 +83,13 @@ Choosing an option opens one dialog that states everything the operation will
 do. Nothing asks again afterwards; after `⏎` the operation runs to completion
 or stops at the first failure (§6).
 
-- **summarise & continue**: v2's cost text ("the model reads this session up
+- **squash**: v2's cost text ("the model reads this session up
   to the end of the range … that whole prefix is billed"), then:
   `Then: turns <a>–<b> are replaced by the summary · a new session replaces
   this line in the tree (the old one is hidden, kept on disk)`.
-- **summarise & fold**: the same cost text, then `Then: you choose where to fold
-  it in. When you do, turns <a>–<b> are cut from this line.`
-- **cut**: `Removes turns <a>–<b>. Costs nothing. No note is left in the
+- **squash into…**: the same cost text, then `Then: you choose where to merge
+  it in. When you do, turns <a>–<b> are dropped from this line.`
+- **drop**: `Removes turns <a>–<b>. Costs nothing. No note is left in the
   conversation.` plus the same replacement line.
 
 The turns named are the range **after widening** (§3.1), so the user sees
@@ -93,11 +101,11 @@ Each refusal is a status line with its reason. The range stays fixed so it can
 be adjusted.
 
 - The range crosses sessions (v2, unchanged).
-- The session's live agent is busy (§6.1). For fold this is checked when the
-  summary is placed, since that is when the source is written.
-- A fold whose range covers every turn of its line (it would leave nothing);
-  checked before the summary is paid for.
-- A cut would remove every turn.
+- The session's live agent is busy (§6.1). For squash into… this is checked
+  when the summary is placed, since that is when the source is written.
+- A squash into… whose range covers every turn of its line (it would leave
+  nothing); checked before the summary is paid for.
+- A drop would remove every turn.
 - The range is not on the chain up to the session's tip (§3.3).
 
 ### 2.5 `p` — fold back
@@ -107,45 +115,45 @@ After a summary is picked:
 - **At the tip of a session open in a live pane**: unchanged from v2 §5 — the
   summary is delivered as a message. No menu.
 - **Anywhere else**, a two-option menu:
-  - **insert here** — splice with an empty range after this turn, seeded with
+  - **merge here** — splice with an empty range after this turn, seeded with
     the summary. Replaces the line (§5). Opens nothing.
   - **branch here** — v2's seeded graft: a new line that ends at this turn plus
     the summary. The old line stays visible. Opens nothing (v2 opened a pane;
     the user now presses `⏎` on it).
 
-Inserting far back in a long line gives the model a history in which later
+Merging far back in a long line gives the model a history in which later
 turns follow a summary they were written without. That is usually harmless and
 is not warned about.
 
-"Insert and remove everything after" is not offered: it is a cut plus an
-insert, and `s` → cut covers it.
+"Merge and remove everything after" is not offered: it is a drop plus a
+merge, and `s` → drop covers it.
 
 ### 2.6 The summary is still stored
 
-Both summarise options store the summary exactly as v2 does, so `p` can fold
+Both summarise options store the summary exactly as v2 does, so `p` can merge
 the same summary into another line later.
 
 ### 2.7 Fold mode — a move
 
-After **summarise & fold**'s summary arrives, the overlay stays open in fold
-mode, status `summary ready — move to a turn and press ⏎ to fold it in · esc
+After **squash into…**'s summary arrives, the overlay stays open in fold
+mode, status `summary ready — move to a turn and press ⏎ to merge it in · esc
 keeps it for later (p)`.
 
 - `⏎` on a turn does what choosing that summary in `p`'s picker does (§2.5):
-  delivered as a message at the live tip, the insert/branch menu elsewhere —
-  **and then the range is cut from its source line**, as a `cut` (§5.1, the
-  `✂` marker). The place menu and its confirmation say so:
-  `…and turns <a>–<b> are cut from <source8>`.
+  delivered as a message at the live tip, the merge/branch menu elsewhere —
+  **and then the range is dropped from its source line**, as a `drop` (§5.1,
+  the `✂` marker). The place menu and its confirmation say so:
+  `…and turns <a>–<b> are dropped from <source8>`.
 - Before anything is written, the source's agent is checked (§6.1); if busy,
   nothing is written anywhere.
-- Folding into the source line itself is refused (`fold into another line —
-  use continue for this one`).
-- **Order: the fold is written first, then the cut.** If the cut fails, the
-  status says `folded into <x>, but the source was not cut: <err>` — a copy,
-  nothing lost. The reverse order could lose the stretch with its summary
-  nowhere.
+- Merging into the source line itself is refused (`merge into another line —
+  use squash for this one`).
+- **Order: the squash is written first, then the drop.** If the drop fails,
+  the status says `squashed into <x>, but the source was not dropped: <err>`
+  — a copy, nothing lost. The reverse order could lose the stretch with its
+  summary nowhere.
 - `esc` leaves fold mode and cancels the move: the source is untouched and the
-  summary stays stored for `p` (which never cuts).
+  summary stays stored for `p` (which never drops).
 
 ## 3. The splice
 
@@ -163,7 +171,7 @@ to no turn.
 The range is widened outward to whole turns: its start moves back to its
 turn's prompt, its end forward to the last entry before the next prompt.
 
-This is the only rule that keeps the result valid. A mid-turn cut leaves a
+This is the only rule that keeps the result valid. A mid-turn drop leaves a
 tool_use without its tool_result, which the Messages API rejects, or puts two
 user or two assistant messages side by side. Turn boundaries avoid both.
 Measured on 112 real transcripts (973 boundaries): all 9146 tool pairs lie
@@ -183,20 +191,21 @@ The source transcript is never modified.
    is its chain position's turn; off-chain entries kept by rules 2–4 take the
    turn of the entry that caused them to be kept.
 4. Re-attach the first entry after the range (the next turn's prompt):
-   - **compact / insert**: to the seed. The seed is one user entry carrying
+   - **squash / merge**: to the seed. The seed is one user entry carrying
      the seed text verbatim, parented to the last entry before the range.
-   - **cut**: directly to the last entry before the range.
+   - **drop**: directly to the last entry before the range.
    - If nothing precedes the range but a preamble, "the last entry before the
      range" is the preamble's last entry; if there is no preamble either, it
      is null and the seed or the next prompt becomes the root.
-5. If nothing follows the range, the seed (or, for a cut, the last entry
+5. If nothing follows the range, the seed (or, for a drop, the last entry
    before the range) is the new leaf.
 6. `sessionId`/`session_id` and `cwd` are rewritten as in `GraftSeeded`.
    **Entry uuids are kept.** Branch re-attachment (§5.3) depends on it.
 
-Seeds: compact uses `CompactionPrefix` (`⤶ compacted <from>..<to>`); insert
-always uses `SummaryPrefix` — nothing was removed, so nothing contracted (§6b). The
-existing `ErrUnmarkedSeed` check applies.
+Seeds: squash uses `CompactionPrefix` (`⤶ squashed <from>..<to>`); merge
+always uses `SummaryPrefix` (`⤶ merged from <session>`) — nothing was
+removed, so nothing contracted (§6b). The existing `ErrUnmarkedSeed` check
+applies.
 
 ### 3.3 Refused, nothing written
 
@@ -204,7 +213,7 @@ existing `ErrUnmarkedSeed` check applies.
   unsupported version (`checkVersion`).
 - The range's start or end is not in `Select(es, tip)`: the range lies on a
   stretch the session has already rewound away from.
-- A cut whose widened range covers every turn. (A compaction of every turn is
+- A drop whose widened range covers every turn. (A squash of every turn is
   allowed; the result is the preamble plus the summary.)
 
 ### 3.4 Native `/compact`
@@ -213,7 +222,7 @@ Claude Code's own `/compact` writes a `compact_boundary` where the parent chain
 restarts. Splice follows `parentUuid` as graft does, so it sees only the line
 after the last boundary — the same line the tree shows.
 
-## 4. Summarise & continue, end to end
+## 4. Squash, end to end
 
 1. Confirm (§2.3), with the busy check (§6.1).
 2. `adapter.Summarise` over the widened range — unchanged from v2, billed.
@@ -224,9 +233,9 @@ after the last boundary — the same line the tree shows.
 
 If the summary call fails, nothing is written or hidden.
 
-summarise & fold is steps 2–3 (the whole-line refusal instead of the busy
-check), then fold mode (§2.7), where the placement writes the fold and then
-cuts the source.
+squash into… is steps 2–3 (the whole-line refusal instead of the busy
+check), then fold mode (§2.7), where the placement writes the squash and then
+drops the source.
 
 ## 5. Store and tree
 
@@ -275,9 +284,10 @@ Stored edges are never rewritten; resolution happens when the tree is built.
 
 ### 5.4 Markers
 
-- **Cut**: the row after the cut shows `✂ <n> turns cut` in the muted style.
-  It comes from the store record; nothing about the cut is in the transcript.
-- **Compact / insert**: the seeded entry renders blue or orange through its
+- **Drop**: the row after the drop shows `✂ <n> turns dropped` in the muted
+  style. It comes from the store record; nothing about the drop is in the
+  transcript.
+- **Squash / merge**: the seeded entry renders blue or orange through its
   `⤶` prefix, per v2 §6b. Unchanged.
 
 ## 6. Live handover
@@ -305,7 +315,7 @@ times without moving) for a session still open in a pane.
 - None found: plain resume, as today.
 - Found, and its agent is `working`: refused — closing it would kill the
   running turn.
-- Found: confirm `Continue on the new line. The pane running the old line is
+- Found: confirm `Check out the new line. The pane running the old line is
   closed; text typed but not sent there is lost.` Then open the new session
   **with focus**, and close the old pane only if the open succeeded. If the
   open failed, the old pane is left running.
@@ -323,8 +333,8 @@ fold) still targets only the agent actually running, never a resolved session.
 
 Each says what did happen:
 
-- `compacted 1a2b3c4d → 5e6f7a8b — ⏎ on it to continue there`
-- `cut 8 turns from 1a2b3c4d → 5e6f7a8b — ⏎ on it to continue there`
+- `squashed 1a2b3c4d → 5e6f7a8b — ⏎ on it to continue there`
+- `dropped 8 turns from 1a2b3c4d → 5e6f7a8b — ⏎ on it to continue there`
 - `opened 5e6f7a8b, but the old pane did not close: <err>`
 - `could not open 5e6f7a8b — old pane left running: <err>`
 
@@ -333,8 +343,8 @@ status line.
 
 ## 7. Cost
 
-- Cut and insert spend nothing: they are local file writes.
-- Compaction spends one summary call, as v2's summarise does.
+- Drop and merge spend nothing: they are local file writes.
+- Squash spends one summary call, as v2's summarise does.
 - The first message in a new session is sent with a cold prompt cache: the
   whole (now smaller) context is billed uncached once.
 
@@ -346,15 +356,15 @@ adds no credential of its own.
 ## 8. Testing
 
 - Unit tests, no API calls:
-  - `Splice`: middle range; range at turn 1 with and without a preamble; cut
-    vs. compact vs. insert (empty range); nothing after the range; range off
-    the tip chain (refused); whole-session cut (refused); turns appended after
+  - `Splice`: middle range; range at turn 1 with and without a preamble; drop
+    vs. squash vs. merge (empty range); nothing after the range; range off
+    the tip chain (refused); whole-session drop (refused); turns appended after
     the range was fixed.
   - Widening to whole turns, including ranges that start and end on tool
     calls.
   - `replaced_by` resolution through two splices; branch re-attachment,
     including a branch off a removed turn.
-  - The cut marker; the range menu; the `p` insert/branch menu.
+  - The drop marker; the range menu; the `p` merge/branch menu.
 - Fixtures copied from real transcript shapes — parallel tool calls,
   attachments, a preamble, a `compact_boundary` — anonymised. A fixture that
   cannot occur in reality is how six v2 tests came to be unable to fail.
@@ -374,8 +384,8 @@ adds no credential of its own.
 ## 9. Changes to the timeline spec
 
 - §4: `s` selects a range; summarising is one option of the range menu.
-- §5: fold-back away from a live tip offers insert here beside branch here.
-- §6b: "blue means this line contracted" becomes literally true for compaction.
+- §5: fold-back away from a live tip offers merge here beside branch here.
+- §6b: "blue means this line contracted" becomes literally true for squash.
 - The standing rule "never delete a session the user could still resume"
   stands. A replaced session is hidden, not deleted.
 

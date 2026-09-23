@@ -684,7 +684,7 @@ func TestPickerFoldsTheChosenSummaryInAtTheSelectedTurn(t *testing.T) {
 	if len(got.picking) != 1 || got.pickAt != got.m.Rows()[0].Node {
 		t.Fatalf("the picker did not open on the selected turn: %+v", got.pickAt)
 	}
-	if !strings.Contains(got.View(), "insert it here, or branch here") {
+	if !strings.Contains(got.View(), "merge it here, or branch here") {
 		t.Fatalf("the picker does not say what enter will do:\n%s", got.View())
 	}
 
@@ -1064,14 +1064,14 @@ func TestRenderRowShowsCutsAndRemovedOrigins(t *testing.T) {
 	if got, _ := renderRow(Row{Node: here}, false, "", 120); strings.Contains(got, "✂") {
 		t.Fatalf("cut marker must not be in the row's own line: %q", got)
 	}
-	if got := cutNote(here); got != "   ✂ 8 turns cut before this" {
+	if got := cutNote(here); got != "   ✂ 8 turns dropped before this" {
 		t.Fatalf("cutNote(CutHere) = %q", got)
 	}
 	end := &tree.Node{Node: adapter.Node{ID: "t2", Title: "two", Kind: adapter.KindHuman}, SessionID: "s", IsSessionLeaf: true, CutAfter: 3}
 	if got, _ := renderRow(Row{Node: end}, false, "", 120); strings.Contains(got, "✂") {
 		t.Fatalf("trailing cut marker must not be in the row's own line: %q", got)
 	}
-	if got := cutNote(end); got != "   ✂ 3 turns cut after this" {
+	if got := cutNote(end); got != "   ✂ 3 turns dropped after this" {
 		t.Fatalf("cutNote(CutAfter) = %q", got)
 	}
 	orphan := &tree.Node{Node: adapter.Node{ID: "b1", Title: "b"}, SessionID: "br", IsSessionRoot: true, FromRemoved: true}

@@ -52,8 +52,8 @@ func TestEveryColouredDistinctionAlsoHasAGlyph(t *testing.T) {
 		n     *tree.Node
 		glyph string
 	}{
-		{&tree.Node{Node: adapter.Node{Kind: adapter.KindSummaryImport, Title: "⤶ summary of f2af34a4"}}, "⤶ summary of"},
-		{&tree.Node{Node: adapter.Node{Kind: adapter.KindSummaryCompaction, Title: "⤶ compacted t3..t9"}}, "⤶ compacted"},
+		{&tree.Node{Node: adapter.Node{Kind: adapter.KindSummaryImport, Title: "⤶ merged from f2af34a4"}}, "⤶ merged from"},
+		{&tree.Node{Node: adapter.Node{Kind: adapter.KindSummaryCompaction, Title: "⤶ squashed t3..t9"}}, "⤶ squashed"},
 		{&tree.Node{Broken: true, IsSessionRoot: true, SessionID: "s"}, "⚠"},
 	} {
 		text, _ := renderRow(Row{Node: c.n}, false, "", 80)
@@ -129,11 +129,11 @@ func TestRangeRowIsStyledAndMarked(t *testing.T) {
 
 // The ⤶ comes from the entry's own text, so the renderer must not add a
 // second one. Synthetic titles in other tests never collide with the real
-// prefix, which is how "⤶ ⤶ summary of …" reached a real screen.
+// prefix, which is how "⤶ ⤶ merged from …" reached a real screen.
 func TestSummaryRowCarriesExactlyOneMarker(t *testing.T) {
 	for _, kind := range []adapter.Kind{adapter.KindSummaryImport, adapter.KindSummaryCompaction} {
 		n := &tree.Node{
-			Node:      adapter.Node{ID: "n1", Kind: kind, Title: "⤶ summary of f2af34a4 — redis-backed sessions"},
+			Node:      adapter.Node{ID: "n1", Kind: kind, Title: "⤶ merged from f2af34a4 — redis-backed sessions"},
 			SessionID: "s",
 		}
 		text, _ := renderRow(Row{Node: n}, false, "", 120)
@@ -157,7 +157,7 @@ func TestARangeDoesNotTakeTheColourOfARowThatNeedsIt(t *testing.T) {
 		{adapter.KindHuman, StyleRange},
 		{adapter.KindAssistant, StyleRange},
 	} {
-		n := &tree.Node{Node: adapter.Node{ID: "n1", Kind: c.kind, Title: "⤶ summary of abc"}, SessionID: "s"}
+		n := &tree.Node{Node: adapter.Node{ID: "n1", Kind: c.kind, Title: "⤶ merged from abc"}, SessionID: "s"}
 		text, key := renderRow(Row{Node: n, InRange: true}, false, "", 120)
 		if key != c.want {
 			t.Fatalf("kind %v in a range styled %v, want %v", c.kind, key, c.want)
