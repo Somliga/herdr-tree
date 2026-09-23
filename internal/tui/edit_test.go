@@ -517,3 +517,28 @@ func TestEnterOnAReplacementWithNoOldPaneJustResumes(t *testing.T) {
 		t.Fatalf("resumed %q focused=%v, want unfocused", fa.resumed, fa.focused)
 	}
 }
+
+func TestAFailedCloseAfterTheHandoverIsReported(t *testing.T) {
+	fa := &fakeAdapter{}
+	h := &herdrLog{status: []string{"idle"}, closeErr: errors.New("no such pane")}
+	u, _ := press(t, replacedUI(t, fa, h), enter)
+	_, cmd := press(t, u, enter)
+	msg := cmd().(actionDoneMsg)
+	if fa.resumed != "spliced-sid" || !fa.focused {
+		t.Fatalf("resumed %q focused=%v", fa.resumed, fa.focused)
+	}
+	if msg.quit || msg.status != "opened spliced-, but the old pane did not close: no such pane" {
+		t.Fatalf("%+v", msg)
+	}
+}
+
+func TestEnterOnAReplacementWhenHerdrWillNotSayIsRefused(t *testing.T) {
+	fa := &fakeAdapter{}
+	u, cmd := press(t, replacedUI(t, fa, &herdrLog{liveErr: errors.New("herdr agent list timed out")}), enter)
+	if cmd != nil || u.confirm != "" || fa.resumed != "" {
+		t.Fatalf("went ahead without knowing: confirm %q resumed %q", u.confirm, fa.resumed)
+	}
+	if !strings.Contains(u.status, "cannot tell whether the old line is still open") {
+		t.Fatalf("status %q", u.status)
+	}
+}
