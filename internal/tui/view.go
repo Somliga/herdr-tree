@@ -92,9 +92,6 @@ func renderRow(r Row, selected bool, currentSession string, width int) (string, 
 	if r.Node.FromRemoved {
 		b.WriteString("from a removed stretch  ")
 	}
-	if r.Node.CutHere > 0 {
-		b.WriteString(fmt.Sprintf("✂ %d turns cut  ", r.Node.CutHere))
-	}
 	if r.HasChildren && r.Folded {
 		b.WriteString("▸ ")
 	}
@@ -123,9 +120,6 @@ func renderRow(r Row, selected bool, currentSession string, width int) (string, 
 		title = "transcript unreadable — metadata only"
 	}
 	b.WriteString(title)
-	if r.Node.CutAfter > 0 {
-		b.WriteString(fmt.Sprintf("   ✂ %d turns cut after this", r.Node.CutAfter))
-	}
 
 	currentTip := r.Node.SessionID != "" && r.Node.SessionID == currentSession && r.Node.IsSessionLeaf
 	if currentTip {
@@ -153,6 +147,18 @@ func renderRow(r Row, selected bool, currentSession string, width int) (string, 
 		key = StyleRange
 	}
 	return line, key
+}
+
+// cutNote is the cut marker, drawn apart from its row so View can mute it
+// whatever the row's own style (spec §5.4). "" when the row has none.
+func cutNote(n *tree.Node) string {
+	if n.CutHere > 0 {
+		return fmt.Sprintf("   ✂ %d turns cut before this", n.CutHere)
+	}
+	if n.CutAfter > 0 {
+		return fmt.Sprintf("   ✂ %d turns cut after this", n.CutAfter)
+	}
+	return ""
 }
 
 // confirmText is the branch confirmation, which is where the user is told
@@ -735,7 +741,7 @@ func (u uiModel) View() string {
 			marker = "> "
 		}
 		text, key := renderRow(r, start+i == u.m.Cursor, u.current, u.width-2)
-		b.WriteString(marker + render(key, text) + "\n")
+		b.WriteString(marker + render(key, text) + render(StyleTool, cutNote(r.Node)) + "\n")
 	}
 	if total > 0 {
 		b.WriteString(fmt.Sprintf("\n(%d/%d)\n", u.m.Cursor+1, total))

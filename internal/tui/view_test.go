@@ -1008,16 +1008,53 @@ func summariesFor(st *store.Store, sessionID string) []store.Summary {
 }
 
 func TestRenderRowShowsCutsAndRemovedOrigins(t *testing.T) {
+	// The cut marker is drawn apart from the row (in View, via cutNote) so it
+	// can be muted whatever the row's own style — renderRow's line must not
+	// carry it at all.
 	here := &tree.Node{Node: adapter.Node{ID: "t4", Title: "four", Kind: adapter.KindHuman}, SessionID: "s", CutHere: 8}
-	if got, _ := renderRow(Row{Node: here}, false, "", 120); !strings.Contains(got, "✂ 8 turns cut") {
-		t.Fatalf("cut marker missing: %q", got)
+	if got, _ := renderRow(Row{Node: here}, false, "", 120); strings.Contains(got, "✂") {
+		t.Fatalf("cut marker must not be in the row's own line: %q", got)
+	}
+	if got := cutNote(here); got != "   ✂ 8 turns cut before this" {
+		t.Fatalf("cutNote(CutHere) = %q", got)
 	}
 	end := &tree.Node{Node: adapter.Node{ID: "t2", Title: "two", Kind: adapter.KindHuman}, SessionID: "s", IsSessionLeaf: true, CutAfter: 3}
-	if got, _ := renderRow(Row{Node: end}, false, "", 120); !strings.Contains(got, "✂ 3 turns cut after this") {
-		t.Fatalf("trailing cut marker missing: %q", got)
+	if got, _ := renderRow(Row{Node: end}, false, "", 120); strings.Contains(got, "✂") {
+		t.Fatalf("trailing cut marker must not be in the row's own line: %q", got)
+	}
+	if got := cutNote(end); got != "   ✂ 3 turns cut after this" {
+		t.Fatalf("cutNote(CutAfter) = %q", got)
 	}
 	orphan := &tree.Node{Node: adapter.Node{ID: "b1", Title: "b"}, SessionID: "br", IsSessionRoot: true, FromRemoved: true}
 	if got, _ := renderRow(Row{Node: orphan}, false, "", 120); !strings.Contains(got, "from a removed stretch") {
 		t.Fatalf("removed-origin marker missing: %q", got)
+	}
+}
+
+// TestViewMutesTheCutMarker checks the muting itself: the cut marker in the
+// full View output must carry StyleTool's rendering, whatever style the row
+// it sits on takes (spec §5.4) — renderRow no longer even sees it.
+func TestViewMutesTheCutMarker(t *testing.T) {
+	st := &store.Store{Branches: map[string]store.Branch{}}
+	st.Replace("old", "new", store.Branch{Kind: store.KindCut, Cut: &store.Cut{Turns: 2, At: "t2"}})
+	roots := tree.Build([]adapter.Session{
+		{ID: "new", Nodes: []adapter.Node{{ID: "t1", Title: "one"}, {ID: "t2", Title: "two"}}},
+	}, st)
+	u := uiModel{m: New(roots), roots: roots, current: "new"}
+	for u.m.Rows()[0].Folded {
+		u.m.Unfold()
+	}
+	var cut *tree.Node
+	for _, r := range u.m.Rows() {
+		if r.Node.CutHere > 0 {
+			cut = r.Node
+		}
+	}
+	if cut == nil {
+		t.Fatal("no row carries the cut")
+	}
+	want := render(StyleTool, cutNote(cut))
+	if got := u.View(); !strings.Contains(got, want) {
+		t.Fatalf("View output does not mute the cut marker as StyleTool:\ngot:  %q\nwant substring: %q", got, want)
 	}
 }
