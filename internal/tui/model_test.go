@@ -294,6 +294,146 @@ func TestScopeToFindsABranchThatRendersFromWhereItDiverges(t *testing.T) {
 	}
 }
 
+// mkTypedSess builds a session whose nodes carry explicit ids and kinds, so a
+// branch's first new turn can be something other than a fresh human prompt.
+func mkTypedSess(id string, turns ...struct {
+	id   string
+	kind adapter.Kind
+}) adapter.Session {
+	s := adapter.Session{ID: id, Title: "t-" + id, Updated: time.Now()}
+	for _, tt := range turns {
+		s.Nodes = append(s.Nodes, adapter.Node{ID: tt.id, Title: "turn " + tt.id, Kind: tt.kind})
+	}
+	return s
+}
+
+func turn(id string, kind adapter.Kind) struct {
+	id   string
+	kind adapter.Kind
+} {
+	return struct {
+		id   string
+		kind adapter.Kind
+	}{id, kind}
+}
+
+// TestABranchThatDivergesOnAReplyStillShowsTheReply is the reviewer's
+// reproduction: a branch's first turn of its own is an assistant reply, not
+// a fresh human prompt, appended under the copied (Superseded) head. Before
+// the fix, tui.New default-folds that Superseded head (it's an IsHead node
+// with children), and because it never renders (shows() is false for a
+// Superseded node) nothing can ever select it to unfold it — so the reply,
+// and the branch's ↳ marker, never appear.
+func TestABranchThatDivergesOnAReplyStillShowsTheReply(t *testing.T) {
+	trunk := mkTypedSess("trunk", turn("n1", adapter.KindHuman))
+	branch := mkTypedSess("branch",
+		turn("n1", adapter.KindHuman),        // copied graft point
+		turn("reply", adapter.KindAssistant), // new: the branch's own first turn
+		turn("next-head", adapter.KindHuman), // new: a further prompt
+	)
+	st := &store.Store{Version: 1, Branches: map[string]store.Branch{
+		"branch": {GraftedFrom: store.From{SessionID: "trunk", Node: "n1"}},
+	}}
+	roots := tree.Build([]adapter.Session{trunk, branch}, st)
+
+	m := New(roots)
+	rows := m.Rows()
+	got := ids(rows)
+	want := map[string]bool{"n1": true, "reply": true, "next-head": true}
+	if len(got) != len(want) {
+		t.Fatalf("rows %v want exactly n1 (trunk), reply and next-head (branch)", got)
+	}
+	for _, id := range got {
+		if !want[id] {
+			t.Fatalf("unexpected row %q: %v", id, got)
+		}
+	}
+
+	byID := map[string]Row{}
+	for _, r := range rows {
+		byID[r.Node.Node.ID] = r
+	}
+	reply := byID["reply"]
+	if reply.Node == nil {
+		t.Fatal("the branch's reply must render")
+	}
+	if !reply.Node.Grafted || !reply.Node.IsSessionRoot {
+		t.Fatalf("reply must carry the branch's start marker: %+v", reply.Node)
+	}
+	if reply.Depth != byID["n1"].Depth+1 {
+		t.Fatalf("reply must render one level under trunk's n1: reply depth %d, n1 depth %d", reply.Depth, byID["n1"].Depth)
+	}
+	if byID["next-head"].Node.Grafted || byID["next-head"].Node.IsSessionRoot {
+		t.Fatalf("next-head is not the branch's start, reply is: %+v", byID["next-head"].Node)
+	}
+}
+
+// TestABranchThatDivergesOnAReplyBeforeANewPromptStillShowsIt is the same
+// bug in the user's own reported shape (§5.3b's worked example), with an
+// assistant reply wedged between the copied BITTEREND and the new
+// TRIPPLEDIP prompt.
+func TestABranchThatDivergesOnAReplyBeforeANewPromptStillShowsIt(t *testing.T) {
+	trunk := mkTypedSess("trunk",
+		turn("hello", adapter.KindHuman),
+		turn("BING", adapter.KindHuman),
+		turn("BITTEREND", adapter.KindHuman),
+		turn("FAN", adapter.KindHuman),
+	)
+	branch := mkTypedSess("branch",
+		turn("hello", adapter.KindHuman),
+		turn("BING", adapter.KindHuman),
+		turn("BITTEREND", adapter.KindHuman),
+		turn("reply", adapter.KindAssistant),  // new
+		turn("TRIPPLEDIP", adapter.KindHuman), // new
+		turn("HORSE", adapter.KindHuman),      // new
+	)
+	st := &store.Store{Version: 1, Branches: map[string]store.Branch{
+		"branch": {GraftedFrom: store.From{SessionID: "trunk", Node: "BITTEREND"}},
+	}}
+	roots := tree.Build([]adapter.Session{trunk, branch}, st)
+
+	m := New(roots)
+	got := ids(m.Rows())
+	for _, want := range []string{"reply", "TRIPPLEDIP", "HORSE"} {
+		found := false
+		for _, id := range got {
+			if id == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("row %q missing from %v", want, got)
+		}
+	}
+}
+
+// TestFoldOnALeafSkipsPastASupersededParent guards Fold's jump-to-parent:
+// the immediate tree parent of a branch's first-of-its-own leaf is its
+// Superseded copy of the graft point, which never has a row. Fold must walk
+// up past it to the nearest ancestor that actually renders, not silently
+// fail to move.
+func TestFoldOnALeafSkipsPastASupersededParent(t *testing.T) {
+	trunk := mkTypedSess("trunk", turn("n1", adapter.KindHuman))
+	branch := mkTypedSess("branch",
+		turn("n1", adapter.KindHuman),        // copied graft point
+		turn("reply", adapter.KindAssistant), // new, and a leaf
+	)
+	st := &store.Store{Version: 1, Branches: map[string]store.Branch{
+		"branch": {GraftedFrom: store.From{SessionID: "trunk", Node: "n1"}},
+	}}
+	roots := tree.Build([]adapter.Session{trunk, branch}, st)
+
+	m := New(roots)
+	m.Down() // cursor onto "reply", the only other row
+	if m.Selected().Node.ID != "reply" {
+		t.Fatalf("expected cursor on reply, got %+v", m.Selected())
+	}
+	m.Fold()
+	if m.Selected().Node.ID != "n1" {
+		t.Fatalf("folding the leaf should jump to trunk's n1 (skipping the Superseded copy), got %+v", m.Selected())
+	}
+}
+
 func TestScopeToUnknownSessionReturnsNil(t *testing.T) {
 	s1 := chain("n1", "n2")
 	if got := ScopeTo([]*tree.Node{s1}, "does-not-exist"); got != nil {

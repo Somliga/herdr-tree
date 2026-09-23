@@ -263,13 +263,20 @@ func New(roots []*tree.Node) *Model {
 	}
 	// Sections start folded. The point of opening the tree is to find a turn,
 	// not to read 684 rows of tool calls; the body is one keypress away.
+	//
+	// A Superseded head is never given a row (shows() hides it), so nothing
+	// can ever select it to unfold it — folding it here would bury its own
+	// body (a branch's first turns of its own) forever. Rows() also treats
+	// a Superseded node as unfolded regardless of this map, as a second line
+	// of defence; this loop skipping it is what keeps Fold/Unfold from ever
+	// having to think about it.
 	for n := range m.parent {
-		if n.IsHead && len(n.Children) > 0 {
+		if n.IsHead && len(n.Children) > 0 && !n.Superseded {
 			m.Folded[n] = true
 		}
 	}
 	for _, r := range roots {
-		if r.IsHead && len(r.Children) > 0 {
+		if r.IsHead && len(r.Children) > 0 && !r.Superseded {
 			m.Folded[r] = true
 		}
 	}
@@ -356,8 +363,13 @@ func childDepth(n, c *tree.Node, depth int, nOnTrunk, cOnTrunk bool) int {
 		return depth + 1 // the divergence: a branch, or the abandoned tail
 	case !nOnTrunk && c.SessionID != n.SessionID:
 		return depth + 1 // v1 graft indent, off-trunk throughout
-	case n.IsHead && !c.IsHead:
-		return depth + 1 // this section's body
+	case n.IsHead && !c.IsHead && !n.Superseded:
+		// This section's body — but only when n itself gets a row to indent
+		// under. n.Superseded means n is a branch's copy of a turn its
+		// parent already shows (§5.3b): it renders nothing, so its body (the
+		// branch's own first turns) must not be indented a second time
+		// under a row that was never drawn.
+		return depth + 1
 	}
 	return depth
 }
@@ -378,7 +390,10 @@ func (m *Model) Rows() []Row {
 			return
 		}
 		visited[n] = true
-		folded := m.Folded[n]
+		// A Superseded node never has a row, so it can never be reached to
+		// unfold, and folding it would bury its own body permanently. Belt
+		// and braces alongside New() never setting m.Folded for one.
+		folded := m.Folded[n] && !n.Superseded
 		shown := m.shows(n)
 		if shown {
 			out = append(out, Row{
@@ -458,7 +473,13 @@ func (m *Model) Fold() {
 		m.Folded[n] = true
 		return
 	}
+	// Walk up past any ancestor with no row of its own (a Superseded copy —
+	// the only way a node in m.parent can be unreachable in Rows()) so a
+	// leaf never fails silently to jump anywhere.
 	p := m.parent[n]
+	for p != nil && p.Superseded {
+		p = m.parent[p]
+	}
 	if p == nil {
 		return
 	}
