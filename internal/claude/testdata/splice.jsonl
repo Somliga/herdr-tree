@@ -1,0 +1,18 @@
+{"type":"attachment","uuid":"pre1","parentUuid":null,"sessionId":"S","cwd":"/repo","version":"2.1.278","timestamp":"2026-01-01T12:00:00Z","attachment":{"kind":"reminder"}}
+{"type":"user","uuid":"u1","parentUuid":"pre1","sessionId":"S","cwd":"/repo","version":"2.1.278","timestamp":"2026-01-01T12:00:01Z","message":{"role":"user","content":[{"type":"text","text":"one"}]}}
+{"type":"assistant","uuid":"a1","parentUuid":"u1","sessionId":"S","requestId":"r1","timestamp":"2026-01-01T12:00:02Z","message":{"role":"assistant","content":[{"type":"text","text":"reply one"}]}}
+{"type":"user","uuid":"x1","parentUuid":"a1","sessionId":"S","timestamp":"2026-01-01T12:00:03Z","message":{"role":"user","content":[{"type":"text","text":"abandoned"}]}}
+{"type":"assistant","uuid":"xa1","parentUuid":"x1","sessionId":"S","requestId":"rx","timestamp":"2026-01-01T12:00:04Z","message":{"role":"assistant","content":[{"type":"text","text":"abandoned reply"}]}}
+{"type":"user","uuid":"u2","parentUuid":"a1","sessionId":"S","timestamp":"2026-01-01T12:00:05Z","message":{"role":"user","content":[{"type":"text","text":"two"}]}}
+{"type":"assistant","uuid":"a2","parentUuid":"u2","sessionId":"S","requestId":"r2","timestamp":"2026-01-01T12:00:06Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash"}]}}
+{"type":"assistant","uuid":"a2b","parentUuid":"a2","sessionId":"S","requestId":"r2","timestamp":"2026-01-01T12:00:07Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"t2","name":"Bash"}]}}
+{"type":"user","uuid":"tr1","parentUuid":"a2","sessionId":"S","timestamp":"2026-01-01T12:00:08Z","toolUseResult":{"ok":true},"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1"}]}}
+{"type":"user","uuid":"tr2","parentUuid":"a2b","sessionId":"S","timestamp":"2026-01-01T12:00:09Z","toolUseResult":{"ok":true},"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t2"}]}}
+{"type":"attachment","uuid":"at2","parentUuid":"u2","sessionId":"S","timestamp":"2026-01-01T12:00:10Z","attachment":{"kind":"reminder"}}
+{"type":"assistant","uuid":"a2c","parentUuid":"tr1","sessionId":"S","requestId":"r3","timestamp":"2026-01-01T12:00:11Z","message":{"role":"assistant","content":[{"type":"text","text":"reply two"}]}}
+{"type":"user","uuid":"u3","parentUuid":"a2c","sessionId":"S","timestamp":"2026-01-01T12:00:12Z","message":{"role":"user","content":[{"type":"text","text":"three"}]}}
+{"type":"assistant","uuid":"a3","parentUuid":"u3","sessionId":"S","requestId":"r4","timestamp":"2026-01-01T12:00:13Z","message":{"role":"assistant","content":[{"type":"text","text":"reply three"}]}}
+{"type":"user","uuid":"u4","parentUuid":"a3","sessionId":"S","timestamp":"2026-01-01T12:00:14Z","message":{"role":"user","content":[{"type":"text","text":"four"}]}}
+{"type":"assistant","uuid":"a4","parentUuid":"u4","sessionId":"S","requestId":"r5","timestamp":"2026-01-01T12:00:15Z","message":{"role":"assistant","content":[{"type":"text","text":"reply four"}]}}
+{"type":"system","subtype":"turn_duration","uuid":"sd4","parentUuid":"a4","sessionId":"S","timestamp":"2026-01-01T12:00:16Z"}
+{"type":"last-prompt","leafUuid":"a4","sessionId":"S"}

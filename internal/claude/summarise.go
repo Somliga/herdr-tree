@@ -15,6 +15,10 @@ import (
 // and the overlay is waiting.
 const summariseTimeout = 5 * time.Minute
 
+// summariseGraftHook, when set, sees the throwaway transcript before it is
+// resumed. Tests only: it is how a test observes what the model is shown.
+var summariseGraftHook func(path string)
+
 // SummarisePrompt asks for the four things that make a summary worth folding
 // back. "rejected, and why" matters most: it is what stops the trunk paying
 // again for a dead end this branch already explored.
@@ -55,9 +59,25 @@ func Summarise(srcPath, fromTurn, toTurn, tmpCWD string) (string, error) {
 		return id
 	}
 
-	sid, path, err := Graft(srcPath, toTurn, tmpCWD)
+	// Whole turns, as a splice removes them: the model reads through the end
+	// turn's last entry, and the prompt names each end by the turn's opening
+	// entry — the thing the user typed.
+	l, err := buildLine(es)
 	if err != nil {
 		return "", err
+	}
+	a, b, err := l.span(fromTurn, toTurn)
+	if err != nil {
+		return "", err
+	}
+	fromTurn, toTurn = l.firstOf(a), l.firstOf(b)
+
+	sid, path, err := Graft(srcPath, l.lastOf(b), tmpCWD)
+	if err != nil {
+		return "", err
+	}
+	if summariseGraftHook != nil {
+		summariseGraftHook(path)
 	}
 	// The one place this project removes a session: this exact path was
 	// created moments ago, for this call alone, and nothing else can have

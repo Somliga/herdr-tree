@@ -243,3 +243,28 @@ func TestSummariseCleanupRemovesNothingItDidNotCreate(t *testing.T) {
 		}
 	}
 }
+
+// The end of a range is a whole turn: summarising up to a prompt must let the
+// model read that prompt's reply. v2 grafted at the prompt itself and cut the
+// reply off.
+func TestSummariseReadsTheWholeEndTurn(t *testing.T) {
+	projects := t.TempDir()
+	t.Setenv("CLAUDE_PROJECTS_DIR", projects)
+	var grafted string
+	summariseGraftHook = func(path string) {
+		es, _, _ := ParseFile(path)
+		for _, e := range es {
+			if e.UUID() == "a3" {
+				grafted = "a3"
+			}
+		}
+	}
+	defer func() { summariseGraftHook = nil }()
+	stubClaude(t, "echo summary")
+	if _, err := Summarise("testdata/simple.jsonl", "u1", "u3", t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	if grafted != "a3" {
+		t.Fatal("the throwaway session stops before the end turn's reply")
+	}
+}
