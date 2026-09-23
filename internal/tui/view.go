@@ -171,10 +171,10 @@ func confirmText(n *tree.Node, turns, entries int, size int64, dstCWD string) st
 
 // foldBackConfirmText is confirmText's sibling for a fold-back: the same
 // graft, plus one injected turn, so the same figures.
-func foldBackConfirmText(at *tree.Node, turns, entries int, size int64, note string) string {
+func foldBackConfirmText(at *tree.Node, turns, entries int, size int64) string {
 	return fmt.Sprintf(
-		"Branch at:  %q\n\nThis starts a NEW session carrying %d turn(s) · %d entries · %s, with the summary appended as its next turn.\nThe original is untouched.\n\nOpens nothing: ⏎ on the new line opens it.%s\n\n[enter] branch   [esc] cancel",
-		at.Node.Title, turns, entries, humanBytes(size), note)
+		"Branch at:  %q\n\nThis starts a NEW session carrying %d turn(s) · %d entries · %s, with the summary appended as its next turn.\nThe original is untouched.\n\nOpens nothing: ⏎ on the new line opens it.\n\n[enter] branch   [esc] cancel",
+		at.Node.Title, turns, entries, humanBytes(size))
 }
 
 type uiModel struct {
@@ -219,9 +219,9 @@ type uiModel struct {
 	pickAt  *tree.Node
 	placing store.Summary // the summary chosen in the picker, while the placement menu is open
 
-	// folding is squash into…'s move while the user picks where its
-	// summary goes (§2.7); it stays through the place menu and confirmation,
-	// so backing out of either returns to fold mode.
+	// folding is squash into…'s move while the user picks its target
+	// (§2.7); it stays through the place menu and confirmation, and esc on
+	// any of them cancels it.
 	folding *foldMove
 
 	labelling *tree.Node // non-nil while typing a label
@@ -284,8 +284,6 @@ type actionDoneMsg struct {
 	// session whose tip the cursor moves to.
 	reload bool
 	tip    string
-	// fold puts the overlay into fold mode with the summary just made.
-	fold *foldMove
 }
 
 // resumeCmd and branchCmd run OFF the update loop.
@@ -445,6 +443,14 @@ func (u uiModel) agentFor(n *tree.Node) string {
 	return ""
 }
 
+// cancelMove ends target mode, if it is on: nothing was paid or written.
+func (u uiModel) cancelMove() uiModel {
+	if u.folding != nil {
+		u.folding, u.status = nil, "squash into… cancelled — nothing was paid or written"
+	}
+	return u
+}
+
 func (u uiModel) Init() tea.Cmd { return nil }
 
 func (u uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -458,9 +464,6 @@ func (u uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.quit {
 			u.quitting = true
 			return u, tea.Quit
-		}
-		if msg.fold != nil {
-			u.folding = msg.fold
 		}
 		if msg.reload {
 			if sessions, err := u.a.Discover(u.repoRoot); err == nil {
@@ -560,6 +563,7 @@ func (u uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "esc", "q":
 				if u.menu == "place" {
 					u.pickAt = nil
+					u = u.cancelMove()
 				}
 				u.menu, u.menuIdx = "", 0
 			}
@@ -580,11 +584,12 @@ func (u uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// The range survives: escaping the cost dialog is how you go
 				// back and move the range's start, not how you abandon it.
 				u.confirm, u.pending, u.pendingBusy = "", nil, ""
+				u = u.cancelMove()
 			}
 			return u, nil
 		}
 		if u.folding != nil {
-			// Fold mode: the tree moves as usual, ⏎ places the summary, and
+			// Target mode: the tree moves as usual, ⏎ picks the target, and
 			// s and p stay quiet so there is only one thing in hand.
 			switch msg.String() {
 			case "enter":
@@ -594,9 +599,7 @@ func (u uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return u.placeInFoldMode(n)
 			case "esc":
-				u.folding = nil
-				u.status = "summary kept — p places it later"
-				return u, nil
+				return u.cancelMove(), nil
 			case "s", "p":
 				return u, nil
 			}
@@ -762,7 +765,7 @@ func (u uiModel) View() string {
 		scope = "all sessions"
 	}
 	if u.folding != nil {
-		b.WriteString("↑↓ move to a turn  ⏎ merge it in here  esc keep it for later\n")
+		b.WriteString("↑↓ move to a turn  ⏎ squash into it here  esc cancel\n")
 	} else if u.m.RangeEnd != nil {
 		// While a range is being selected, three keys change meaning. Saying
 		// so is cheaper than the user discovering that esc no longer closes.

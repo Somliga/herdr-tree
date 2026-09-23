@@ -87,7 +87,7 @@ type fakeAdapter struct {
 	spliceErrAt int // fail only this splice, counting from 1
 	spliced     []adapter.Edit
 	splices     int
-	writes      []string // "splice <src>" and "graft <src>", in order, failed ones too
+	writes      []string // "summarise <src>", "splice <src>" and "graft <src>", in order, failed ones too
 
 	sessions []adapter.Session // what Discover finds on a reload
 }
@@ -111,7 +111,8 @@ func (f *fakeAdapter) Resume(sessionID, _ string, focus bool) error {
 	f.resumed, f.focused = sessionID, focus
 	return f.resumeErr
 }
-func (f *fakeAdapter) Summarise(_ adapter.Session, fromTurn, toTurn string, compact bool) (string, error) {
+func (f *fakeAdapter) Summarise(src adapter.Session, fromTurn, toTurn string, compact bool) (string, error) {
+	f.writes = append(f.writes, "summarise "+src.ID)
 	f.summarisedFrom, f.summarisedTo = fromTurn, toTurn
 	f.summarisedCompact = compact
 	if f.summariseErr != nil {

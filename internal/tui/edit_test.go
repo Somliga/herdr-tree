@@ -267,50 +267,21 @@ func TestBranchHereIsTodaysFoldBack(t *testing.T) {
 	}
 }
 
-func TestFoldConfirmsTheCostAndIsNotRefusedByAWorkingAgent(t *testing.T) {
-	fa := &fakeAdapter{summary: "x", span: adapter.Span{First: 2, Last: 3}}
-	u, cmd := press(t, rangeUI(t, fa, &herdrLog{status: []string{"working"}}), enter, down, enter)
-	if cmd != nil {
-		t.Fatal("fold ran before its confirmation")
-	}
-	for _, want := range []string{"billed", "Then: you choose where to merge it in. When you do, turns 2–3 are dropped from this line."} {
-		if !strings.Contains(u.confirm, want) {
-			t.Fatalf("fold confirmation lacks %q (status %q):\n%s", want, u.status, u.confirm)
-		}
-	}
-}
-
-// foldReady runs squash into… to the point where the summary has arrived.
-func foldReady(t *testing.T, fa *fakeAdapter, u uiModel) uiModel {
+// chooseFold picks squash into… from the range menu.
+func chooseFold(t *testing.T, u uiModel) uiModel {
 	t.Helper()
 	u, _ = press(t, u, enter, down, enter)
-	u, cmd := press(t, u, enter)
-	next, _ := u.Update(cmd())
-	return next.(uiModel)
-}
-
-func TestFoldSummarisesThenWaitsInFoldMode(t *testing.T) {
-	fa := &fakeAdapter{summary: "it went well", span: adapter.Span{First: 2, Last: 3}}
-	u := foldReady(t, fa, rangeUI(t, fa, &herdrLog{}))
-	if u.folding == nil || !strings.HasPrefix(u.status, "summary ready") {
-		t.Fatalf("not in fold mode: folding=%v status %q", u.folding, u.status)
-	}
-	if len(fa.spliced) != 0 || len(u.st.AllSummaries()) != 1 {
-		t.Fatalf("fold must store the summary and write nothing: spliced %+v", fa.spliced)
-	}
-	if fa.summarisedCompact {
-		t.Fatal("squash into… must ask for the ordinary summary prompt, not the compaction one")
-	}
-	if !strings.Contains(u.View(), "⏎ merge it in here") {
-		t.Fatalf("the footer does not say what ⏎ does:\n%s", u.View())
-	}
+	return u
 }
 
 func TestAFoldCoveringTheWholeLineIsRefusedBeforeItIsPaidFor(t *testing.T) {
 	fa := &fakeAdapter{summary: "x", span: adapter.Span{First: 1, Last: 3, Turns: 3}}
 	u, cmd := press(t, rangeUI(t, fa, &herdrLog{}), enter, down, enter)
-	if cmd != nil || u.confirm != "" || u.pending != nil || u.m.RangeEnd == nil {
+	if cmd != nil || u.confirm != "" || u.pending != nil || u.folding != nil || u.m.RangeEnd == nil {
 		t.Fatalf("want a refusal with the range kept; confirm %q", u.confirm)
+	}
+	if fa.summarisedFrom != "" {
+		t.Fatal("the refusal came after the summary was paid for")
 	}
 	if u.status != "a squash into… must leave something behind — use p or branch here to copy a whole line" {
 		t.Fatalf("status %q", u.status)
@@ -318,18 +289,21 @@ func TestAFoldCoveringTheWholeLineIsRefusedBeforeItIsPaidFor(t *testing.T) {
 }
 
 // moveUI shows two lines, s (turns t1..t3) and o (o1, o2), with t2..t3 of s
-// summarised by squash into… and fold mode waiting for a target.
+// chosen for squash into… and target mode waiting for a turn.
 func moveUI(t *testing.T, fa *fakeAdapter, h *herdrLog) uiModel {
 	t.Helper()
-	fa.summary, fa.span = "it went well", adapter.Span{First: 2, Last: 3, Turns: 3}
+	if fa.summary == "" {
+		fa.summary = "it went well"
+	}
+	fa.span = adapter.Span{First: 2, Last: 3, Turns: 3}
 	st := loadedStore(t)
 	roots := tree.Build([]adapter.Session{sessionOf("s", "t1", "t2", "t3"), sessionOf("o", "o1", "o2")}, st)
 	u := uiModel{m: New(roots), a: fa, st: st, repoRoot: "/repo", live: h.live, closePane: h.close}
 	u = at(t, u, "t3")
 	u, _ = press(t, u, key('s'))
-	u = foldReady(t, fa, at(t, u, "t2"))
+	u = chooseFold(t, at(t, u, "t2"))
 	if u.folding == nil {
-		t.Fatalf("setup: not in fold mode: %q", u.status)
+		t.Fatalf("setup: not in target mode: %q", u.status)
 	}
 	return u
 }
@@ -349,75 +323,143 @@ func at(t *testing.T, u uiModel, id string) uiModel {
 
 const cutNoteText = "…and turns 2–3 are dropped from s"
 
-func TestAMoveByInsertFoldsFirstThenCutsTheSource(t *testing.T) {
+// Choosing squash into… pays for nothing and asks herdr nothing: even a
+// working source is only asked about once the target is confirmed.
+func TestSquashIntoChoosesTheTargetBeforeAnythingIsPaid(t *testing.T) {
+	fa := &fakeAdapter{}
+	h := &herdrLog{status: []string{"working"}}
+	u := moveUI(t, fa, h)
+	if u.confirm != "" || u.pending != nil || fa.summarisedFrom != "" || len(h.calls) != 0 {
+		t.Fatalf("choosing squash into… did something: confirm %q summarised %q herdr %v", u.confirm, fa.summarisedFrom, h.calls)
+	}
+	if u.status != "move to a turn and press ⏎ to squash turns 2–3 into it · esc cancels" {
+		t.Fatalf("status %q", u.status)
+	}
+	if !strings.Contains(u.View(), "⏎ squash into it here") {
+		t.Fatalf("the footer does not say what ⏎ does:\n%s", u.View())
+	}
+	u, cmd := press(t, u, esc)
+	if cmd != nil || u.folding != nil || u.quitting {
+		t.Fatal("esc must cancel the move, not the overlay")
+	}
+	if fa.summarisedFrom != "" || len(fa.writes) != 0 || len(u.st.AllSummaries()) != 0 {
+		t.Fatalf("esc in target mode paid or wrote: writes %v", fa.writes)
+	}
+}
+
+func TestAMoveByMergeConfirmsOnceThenSummarisesMergesAndDrops(t *testing.T) {
 	fa := &fakeAdapter{}
 	u, _ := press(t, at(t, moveUI(t, fa, &herdrLog{}), "o1"), enter)
 	if u.menu != "place" || !strings.Contains(u.View(), cutNoteText) {
-		t.Fatalf("the place menu does not say the source is cut:\n%s", u.View())
-	}
-	u, _ = press(t, u, enter)
-	if !strings.Contains(u.confirm, cutNoteText) || len(fa.writes) != 0 {
-		t.Fatalf("the insert confirmation does not say the source is cut:\n%s", u.confirm)
+		t.Fatalf("the place menu does not say the source is dropped:\n%s", u.View())
 	}
 	u, cmd := press(t, u, enter)
-	msg := cmd().(actionDoneMsg)
-	if got := strings.Join(fa.writes, ","); got != "splice o,splice s" {
-		t.Fatalf("writes %s, want the fold into o first, then the cut of s", got)
+	for _, want := range []string{"billed", "Then: the summary is merged into o · turns 2–3 are dropped from s"} {
+		if !strings.Contains(u.confirm, want) {
+			t.Fatalf("the confirmation lacks %q:\n%s", want, u.confirm)
+		}
 	}
-	if e := fa.spliced[0]; e.After != "o1" || !strings.Contains(e.Seed, "it went well") {
-		t.Fatalf("the fold %+v", e)
+	if cmd != nil || fa.summarisedFrom != "" || len(fa.writes) != 0 {
+		t.Fatalf("paid or wrote before the confirmation: %v", fa.writes)
+	}
+	u, cmd = press(t, u, enter)
+	msg := cmd().(actionDoneMsg)
+	if got := strings.Join(fa.writes, ","); got != "summarise s,splice o,splice s" {
+		t.Fatalf("writes %s, want the summary, then the merge into o, then the drop from s", got)
+	}
+	if fa.summarisedFrom != "t2" || fa.summarisedTo != "t3" || fa.summarisedCompact {
+		t.Fatalf("summarised %q..%q compact %v, want the range with the ordinary prompt", fa.summarisedFrom, fa.summarisedTo, fa.summarisedCompact)
+	}
+	if e := fa.spliced[0]; e.After != "o1" || !strings.HasPrefix(e.Seed, claudeSummaryPrefix) || !strings.Contains(e.Seed, "it went well") {
+		t.Fatalf("the merge %+v", e)
 	}
 	if e := fa.spliced[1]; e != (adapter.Edit{From: "t2", To: "t3"}) {
-		t.Fatalf("the cut %+v, want exactly the summarised range", e)
+		t.Fatalf("the drop %+v, want exactly the summarised range", e)
+	}
+	if len(u.st.AllSummaries()) != 1 {
+		t.Fatal("the summary must be stored for p")
 	}
 	if u.st.Branches["o"].ReplacedBy != "spliced-sid" || u.st.Branches["s"].ReplacedBy != "spliced2-sid" {
 		t.Fatalf("store %+v", u.st.Branches)
 	}
 	if b := u.st.Branches["spliced2-sid"]; b.Kind != store.KindCut || b.Cut == nil || b.Cut.Turns != 2 || b.Cut.At != "t3" || b.Title != "✂ drop" {
-		t.Fatalf("cut record %+v", b)
+		t.Fatalf("drop record %+v", b)
 	}
 	if msg.status != "squashed into o, dropped 2 turns from s → spliced2" || !msg.reload || msg.quit || msg.tip != "spliced-sid" {
 		t.Fatalf("%+v", msg)
 	}
 	if u.folding != nil {
-		t.Fatal("fold mode outlived the move")
+		t.Fatal("target mode outlived the move")
 	}
 }
 
-func TestAMoveByBranchGraftsFirstThenCutsTheSource(t *testing.T) {
+func TestAMoveByBranchSummarisesGraftsThenDrops(t *testing.T) {
 	fa := &fakeAdapter{}
 	u, _ := press(t, at(t, moveUI(t, fa, &herdrLog{}), "o1"), enter, down, enter)
-	if !strings.Contains(u.confirm, "NEW session") || !strings.Contains(u.confirm, cutNoteText) {
-		t.Fatalf("the branch confirmation does not say the source is cut:\n%s", u.confirm)
+	for _, want := range []string{"billed", "Then: a new line branches at o, carrying the summary · turns 2–3 are dropped from s"} {
+		if !strings.Contains(u.confirm, want) {
+			t.Fatalf("the confirmation lacks %q:\n%s", want, u.confirm)
+		}
+	}
+	if fa.summarisedFrom != "" {
+		t.Fatal("summarised before the confirmation")
 	}
 	_, cmd := press(t, u, enter)
 	msg := cmd().(actionDoneMsg)
-	if got := strings.Join(fa.writes, ","); got != "graft o,splice s" {
-		t.Fatalf("writes %s, want the graft first, then the cut", got)
+	if got := strings.Join(fa.writes, ","); got != "summarise s,graft o,splice s" {
+		t.Fatalf("writes %s, want the summary, the graft, then the drop", got)
+	}
+	if !strings.Contains(fa.seededWith, "it went well") {
+		t.Fatalf("the graft's seed %q lacks the summary", fa.seededWith)
 	}
 	if msg.status != "squashed into o, dropped 2 turns from s → spliced-" || !msg.reload || msg.tip != "new-sid" {
 		t.Fatalf("%+v", msg)
 	}
 }
 
-func TestAMoveToTheLiveTipSendsThenCutsThenQuits(t *testing.T) {
+func TestAMoveToTheLiveTipConfirmsThenSummarisesSendsDropsAndQuits(t *testing.T) {
 	fa := &fakeAdapter{}
 	u := moveUI(t, fa, &herdrLog{})
 	u.current, u.liveAgent = "o", "agent-1"
+	var sent string
 	u.send = func(agent, text string) error {
 		fa.writes = append(fa.writes, "send "+agent)
+		sent = text
 		return nil
 	}
-	_, cmd := press(t, at(t, u, "o2"), enter)
-	if cmd == nil {
-		t.Fatal("⏎ at the live tip must send")
+	u, cmd := press(t, at(t, u, "o2"), enter)
+	for _, want := range []string{"billed", "Then: the summary is sent to agent-1 as your next message · turns 2–3 are dropped from s"} {
+		if !strings.Contains(u.confirm, want) {
+			t.Fatalf("the confirmation lacks %q:\n%s", want, u.confirm)
+		}
 	}
+	if cmd != nil || fa.summarisedFrom != "" || len(fa.writes) != 0 {
+		t.Fatalf("sent or paid before the confirmation: %v", fa.writes)
+	}
+	_, cmd = press(t, u, enter)
 	msg := cmd().(actionDoneMsg)
-	if got := strings.Join(fa.writes, ","); got != "send agent-1,splice s" {
-		t.Fatalf("writes %s, want the send first, then the cut", got)
+	if got := strings.Join(fa.writes, ","); got != "summarise s,send agent-1,splice s" {
+		t.Fatalf("writes %s, want the summary, the send, then the drop", got)
+	}
+	if !strings.Contains(sent, "it went well") {
+		t.Fatalf("sent %q, want the summary", sent)
 	}
 	if !msg.quit || msg.status != "squashed into o, dropped 2 turns from s → spliced-" {
 		t.Fatalf("%+v", msg)
+	}
+}
+
+func TestAFailedMoveSummaryWritesAndDropsNothing(t *testing.T) {
+	fa := &fakeAdapter{summariseErr: errors.New("claude: limit reached")}
+	u, _ := press(t, at(t, moveUI(t, fa, &herdrLog{}), "o1"), enter, enter)
+	u, cmd := press(t, u, enter)
+	next, _ := u.Update(cmd())
+	u = next.(uiModel)
+	if got := strings.Join(fa.writes, ","); got != "summarise s" {
+		t.Fatalf("writes %s, want only the failed summary", got)
+	}
+	if u.quitting || len(u.st.AllSummaries()) != 0 || !strings.Contains(u.status, "summarise failed") {
+		t.Fatalf("status %q", u.status)
 	}
 }
 
@@ -426,7 +468,7 @@ func TestAFailedFoldCutsNothing(t *testing.T) {
 	u, _ := press(t, at(t, moveUI(t, fa, &herdrLog{}), "o1"), enter, down, enter)
 	_, cmd := press(t, u, enter)
 	msg := cmd().(actionDoneMsg)
-	if got := strings.Join(fa.writes, ","); got != "graft o" || msg.status != "branch failed: graft refused" {
+	if got := strings.Join(fa.writes, ","); got != "summarise s,graft o" || msg.status != "branch failed: graft refused" {
 		t.Fatalf("writes %s status %q", got, msg.status)
 	}
 
@@ -434,7 +476,7 @@ func TestAFailedFoldCutsNothing(t *testing.T) {
 	u, _ = press(t, at(t, moveUI(t, fa, &herdrLog{}), "o1"), enter, enter)
 	_, cmd = press(t, u, enter)
 	msg = cmd().(actionDoneMsg)
-	if got := strings.Join(fa.writes, ","); got != "splice o" || msg.status != "merged failed: disk full" {
+	if got := strings.Join(fa.writes, ","); got != "summarise s,splice o" || msg.status != "merged failed: disk full" {
 		t.Fatalf("writes %s status %q", got, msg.status)
 	}
 }
@@ -452,19 +494,19 @@ func TestACutThatFailsAfterTheFoldSaysSo(t *testing.T) {
 	}
 }
 
-// The place menu and confirmation can sit on screen; the source's agent may
-// start a turn meanwhile, and cutting then would hide the line it runs on.
+// The summary takes minutes; the source's agent may start a turn meanwhile,
+// and dropping then would hide the line it runs on.
 func TestAMoveChecksTheSourceAgainBeforeCutting(t *testing.T) {
 	fa := &fakeAdapter{}
 	h := &herdrLog{status: []string{"idle", "working"}}
 	u, _ := press(t, at(t, moveUI(t, fa, h), "o1"), enter, down, enter)
 	_, cmd := press(t, u, enter)
 	msg := cmd().(actionDoneMsg)
-	if got := strings.Join(fa.writes, ","); got != "graft o" {
+	if got := strings.Join(fa.writes, ","); got != "summarise s,graft o" {
 		t.Fatalf("writes %s, want the fold and no cut", got)
 	}
 	if got := strings.Join(h.calls, ","); got != "live s,live s" {
-		t.Fatalf("herdr calls %s, want the source asked at ⏎ and again before the cut", got)
+		t.Fatalf("herdr calls %s, want the source asked at confirm and again before the cut", got)
 	}
 	if msg.status != "squashed into o, but the source was not dropped: agent is working — wait for it to finish; nothing was written" ||
 		!msg.reload || msg.quit || msg.tip != "new-sid" {
@@ -483,30 +525,41 @@ func TestFoldingIntoTheSourceLineIsRefused(t *testing.T) {
 	}
 }
 
-func TestABusySourceRefusesThePlacement(t *testing.T) {
+func TestABusySourceAtConfirmPaysForNothing(t *testing.T) {
 	for _, h := range []*herdrLog{{status: []string{"working"}}, {liveErr: errors.New("timed out")}} {
 		fa := &fakeAdapter{}
-		u, cmd := press(t, at(t, moveUI(t, fa, h), "o1"), enter)
-		if cmd != nil || u.menu != "" || u.folding == nil || len(fa.writes) != 0 {
-			t.Fatalf("menu %q folding %v writes %v", u.menu, u.folding, fa.writes)
+		u, _ := press(t, at(t, moveUI(t, fa, h), "o1"), enter, down, enter)
+		_, cmd := press(t, u, enter)
+		msg := cmd().(actionDoneMsg)
+		if fa.summarisedFrom != "" || len(fa.writes) != 0 {
+			t.Fatalf("writes %v, want nothing summarised or written", fa.writes)
 		}
 		if strings.Join(h.calls, ",") != "live s" {
 			t.Fatalf("herdr calls %v, want the source asked about", h.calls)
 		}
-		if u.status != "the source's agent is working — wait for it to finish" &&
-			u.status != "cannot tell whether the source is busy: timed out" {
-			t.Fatalf("status %q", u.status)
+		if msg.status != "the source's agent is working — wait for it to finish; nothing was paid or written" &&
+			msg.status != "cannot tell whether the source is busy: timed out — nothing was paid or written" {
+			t.Fatalf("status %q", msg.status)
 		}
 	}
 }
 
-// esc cancels the move, and the summary p later folds in moves nothing.
+// esc on the place menu or the confirmation cancels the move, and a summary
+// p later places moves nothing.
 func TestEscCancelsTheMoveAndPNeverCuts(t *testing.T) {
 	fa := &fakeAdapter{}
-	u, _ := press(t, moveUI(t, fa, &herdrLog{}), esc)
-	if u.folding != nil || len(fa.writes) != 0 || len(u.st.AllSummaries()) != 1 {
-		t.Fatalf("folding %v writes %v", u.folding, fa.writes)
+	u, _ := press(t, at(t, moveUI(t, fa, &herdrLog{}), "o1"), enter, esc)
+	if u.menu != "" || u.folding != nil {
+		t.Fatalf("esc on the place menu kept the move: menu %q", u.menu)
 	}
+	u, _ = press(t, at(t, moveUI(t, fa, &herdrLog{}), "o1"), enter, enter, esc)
+	if u.confirm != "" || u.folding != nil {
+		t.Fatal("esc on the confirmation kept the move")
+	}
+	if fa.summarisedFrom != "" || len(fa.writes) != 0 || len(u.st.AllSummaries()) != 0 {
+		t.Fatalf("a cancelled move paid or wrote: %v", fa.writes)
+	}
+	u.st.AddSummary(store.Summary{Text: "what the branch found", SessionID: "other", FromTurn: "a", ToTurn: "b"})
 	u, _ = press(t, at(t, u, "o1"), key('p'), enter)
 	if strings.Contains(u.View(), cutNoteText) {
 		t.Fatalf("p's place menu promises a cut:\n%s", u.View())
@@ -515,29 +568,7 @@ func TestEscCancelsTheMoveAndPNeverCuts(t *testing.T) {
 	_, cmd := press(t, u, enter)
 	cmd()
 	if got := strings.Join(fa.writes, ","); got != "splice o" {
-		t.Fatalf("writes %s, want only the insert", got)
-	}
-}
-
-func TestEscInFoldModeKeepsTheSummary(t *testing.T) {
-	fa := &fakeAdapter{summary: "it went well", span: adapter.Span{First: 2, Last: 3}}
-	u, _ := press(t, foldReady(t, fa, rangeUI(t, fa, &herdrLog{})), esc)
-	if u.folding != nil || u.quitting {
-		t.Fatal("esc must leave fold mode, not the overlay")
-	}
-	if len(u.st.AllSummaries()) != 1 || !strings.Contains(u.status, "kept") {
-		t.Fatalf("status %q; the summary must stay stored", u.status)
-	}
-}
-
-func TestAFailedFoldSummaryWritesNothingAndStaysOpen(t *testing.T) {
-	fa := &fakeAdapter{summariseErr: errors.New("claude: limit reached"), span: adapter.Span{First: 2, Last: 3}}
-	u := foldReady(t, fa, rangeUI(t, fa, &herdrLog{}))
-	if u.folding != nil || u.quitting || len(fa.spliced) != 0 || len(u.st.AllSummaries()) != 0 {
-		t.Fatalf("a failed summary entered fold mode or wrote something: %q", u.status)
-	}
-	if !strings.Contains(u.status, "summarise failed") {
-		t.Fatalf("status %q", u.status)
+		t.Fatalf("writes %s, want only the merge", got)
 	}
 }
 
