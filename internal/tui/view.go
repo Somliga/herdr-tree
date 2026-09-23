@@ -200,6 +200,13 @@ type uiModel struct {
 	send      SendFunc
 	liveAgent string
 
+	live      LiveFunc
+	closePane ClosePaneFunc
+
+	// menu is "range" or "place" while one of the two menus is open.
+	menu    string
+	menuIdx int
+
 	// pending is what the confirmation dialog will run if it is accepted,
 	// captured when the dialog is raised rather than recomputed on enter.
 	pending     tea.Cmd
@@ -255,6 +262,11 @@ func (u *uiModel) rebuild() {
 type actionDoneMsg struct {
 	status string
 	quit   bool
+	// reload re-reads the sessions: an edit that opened nothing left the
+	// overlay up, and the tree on screen still shows the old line. from/to
+	// name the replacement, so the scope can follow it.
+	reload   bool
+	from, to string
 }
 
 // resumeCmd and branchCmd run OFF the update loop.
@@ -312,45 +324,11 @@ func branchCmd(a adapter.Adapter, st *store.Store, n *tree.Node, dst string) tea
 	}
 }
 
-// summariseConfirmText reports what summarising this range will cost.
-//
-// The counts are Preview's at the range's END, not the range's own: a summary
-// is produced by grafting up to the end of the range and asking the model to
-// describe the tail of it, so the model reads the whole conversation up to
-// there. On a long trunk that prefix is the expensive part, and §4 is explicit
-// that the confirmation must say so rather than quote the range alone.
-func summariseConfirmText(from, to *tree.Node, rows, turns, entries int, size int64) string {
-	return fmt.Sprintf(
-		"Summarise %d row(s):\n\n  from  %q\n  to    %q\n\nThe model reads this session up to the end of the range — %d turn(s) · %d entries · %s — and describes only the range. That whole prefix is billed.\n\nNothing is written to the session; the summary is stored in the tree.\n\n[enter] summarise   [esc] cancel",
-		rows, from.Node.Title, to.Node.Title, turns, entries, humanBytes(size))
-}
-
 // SendFunc delivers text to a live agent. It is injected rather than called
 // directly so internal/tui keeps its package boundary — and so the tip-append
 // path, which is the riskiest assumption in v2, is testable without a running
 // Herdr. cmd/herdr-tree wires it to herdr.AgentPrompt.
 type SendFunc func(agent, text string) error
-
-func summariseCmd(a adapter.Adapter, st *store.Store, from, to *tree.Node) tea.Cmd {
-	return func() tea.Msg {
-		src := adapter.Session{ID: from.SessionID, CWD: from.SessionCWD, Path: from.SessionPath}
-		text, err := a.Summarise(src, from.Node.ID, to.Node.ID)
-		if err != nil {
-			return actionDoneMsg{status: "summarise failed: " + err.Error()}
-		}
-		st.AddSummary(store.Summary{
-			Text: text, SessionID: from.SessionID,
-			FromTurn: from.Node.ID, ToTurn: to.Node.ID,
-			CreatedAt: time.Now().UTC(),
-		})
-		if err := st.Save(); err != nil {
-			return actionDoneMsg{status: "summarised, but not saved: " + err.Error()}
-		}
-		// Deliberately does not quit: a summary is generated so it can be
-		// folded back, and the user is one `p` away from doing that.
-		return actionDoneMsg{status: "summarised " + shortID(from.SessionID) + " — press p on a turn to fold it back"}
-	}
-}
 
 // foldBackSeed composes the injected turn's text.
 //
@@ -453,38 +431,6 @@ func (u uiModel) agentFor(n *tree.Node) string {
 	return ""
 }
 
-// summariseConfirm raises the cost dialog for the range in progress.
-func (u uiModel) summariseConfirm() (tea.Model, tea.Cmd) {
-	from, to, ok := u.m.RangeSpan()
-	if !ok {
-		u.m.CancelRange()
-		u.status = "the range is no longer on screen"
-		return u, nil
-	}
-	if from.SessionID != to.SessionID {
-		// Summarise grafts one transcript at the range's end and names the
-		// start turn in it; a start that lives in another session is not in
-		// that transcript at all. The range stays put so it can be adjusted.
-		u.status = "a range must stay inside one session"
-		return u, nil
-	}
-	rows := 0
-	for _, r := range u.m.Rows() {
-		if r.InRange {
-			rows++
-		}
-	}
-	src := adapter.Session{ID: to.SessionID, CWD: to.SessionCWD, Path: to.SessionPath}
-	turns, entries, size, err := u.a.Preview(src, to.Node.ID)
-	if err != nil {
-		u.status = "cannot summarise this range: " + err.Error()
-		return u, nil
-	}
-	u.confirm = summariseConfirmText(from, to, rows, turns, entries, size)
-	u.pending, u.pendingBusy = summariseCmd(u.a, u.st, from, to), "summarising…"
-	return u, nil
-}
-
 func (u uiModel) Init() tea.Cmd { return nil }
 
 func (u uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -498,6 +444,16 @@ func (u uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.quit {
 			u.quitting = true
 			return u, tea.Quit
+		}
+		if msg.reload {
+			if sessions, err := u.a.Discover(u.repoRoot); err == nil {
+				if u.current == msg.from && u.liveAgent == "" {
+					u.current = msg.to
+				}
+				u.roots = tree.Build(sessions, u.st)
+				u.m.RangeEnd = nil
+				u.rebuild()
+			}
 		}
 		return u, nil
 	case tea.KeyMsg:
@@ -579,6 +535,35 @@ func (u uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return u, nil
 		}
+		if u.menu != "" {
+			options := rangeMenu
+			if u.menu == "place" {
+				options = placeMenu
+			}
+			switch msg.String() {
+			case "up", "k":
+				if u.menuIdx > 0 {
+					u.menuIdx--
+				}
+			case "down", "j":
+				if u.menuIdx < len(options)-1 {
+					u.menuIdx++
+				}
+			case "enter":
+				which, idx := u.menu, u.menuIdx
+				u.menu, u.menuIdx = "", 0
+				if which == "range" {
+					if idx == 0 {
+						return u.editConfirm(store.KindCompacted)
+					}
+					return u.editConfirm(store.KindCut)
+				}
+				return u.placeChosen(idx)
+			case "esc", "q":
+				u.menu, u.menuIdx = "", 0
+			}
+			return u, nil
+		}
 		if u.confirm != "" {
 			switch msg.String() {
 			case "enter":
@@ -631,7 +616,7 @@ func (u uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				u.status = "range end fixed — move to its start, then s or ⏎ (esc cancels)"
 				return u, nil
 			}
-			return u.summariseConfirm()
+			return u.openRangeMenu()
 		case "p":
 			n := u.m.Selected()
 			if n == nil || n.Broken || n.Node.ID == "" {
@@ -647,7 +632,7 @@ func (u uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			u.picking, u.pickIdx, u.pickAt = sums, 0, n
 		case "enter":
 			if u.m.RangeEnd != nil {
-				return u.summariseConfirm()
+				return u.openRangeMenu()
 			}
 			n := u.m.Selected()
 			if n == nil || n.Broken {
@@ -726,6 +711,12 @@ func (u uiModel) View() string {
 	if u.picking != nil {
 		return u.pickerView()
 	}
+	if u.menu == "range" {
+		return menuView("Do what with this range?", rangeMenu, u.menuIdx)
+	}
+	if u.menu == "place" {
+		return menuView(fmt.Sprintf("Fold the summary in at:  %q", u.pickAt.Node.Title), placeMenu, u.menuIdx)
+	}
 	var b strings.Builder
 	if len(u.m.Rows()) == 0 {
 		b.WriteString("No Claude sessions found for this directory.\n")
@@ -755,9 +746,9 @@ func (u uiModel) View() string {
 	if u.m.RangeEnd != nil {
 		// While a range is being selected, three keys change meaning. Saying
 		// so is cheaper than the user discovering that esc no longer closes.
-		b.WriteString("↑↓ move to the range's start  s/⏎ summarise  esc cancel range\n")
+		b.WriteString("↑↓ move to the range's start  s/⏎ choose what to do  esc cancel range\n")
 	} else {
-		b.WriteString(fmt.Sprintf("↑↓ move  ←→ fold  ⏎ continue  s summarise  p fold back  L label  a scope:%s  f filter:%s  esc close\n", scope, u.m.Filter))
+		b.WriteString(fmt.Sprintf("↑↓ move  ←→ fold  ⏎ continue  s select  p fold back  L label  a scope:%s  f filter:%s  esc close\n", scope, u.m.Filter))
 	}
 	if u.busy != "" {
 		b.WriteString(u.busy + "\n")
@@ -774,9 +765,10 @@ func (u uiModel) View() string {
 // Run starts the overlay. liveAgent is the Herdr agent running `current`, and
 // send delivers text to it; both may be zero, in which case a fold-back at
 // that session's tip grafts like any other turn and the picker says so.
-func Run(a adapter.Adapter, repoRoot string, st *store.Store, sessions []adapter.Session, current, liveAgent string, send SendFunc) error {
+func Run(a adapter.Adapter, repoRoot string, st *store.Store, sessions []adapter.Session, current, liveAgent string, send SendFunc, live LiveFunc, closePane ClosePaneFunc) error {
 	roots := tree.Build(sessions, st)
-	u := uiModel{m: New(roots), a: a, st: st, repoRoot: repoRoot, current: current, roots: roots, liveAgent: liveAgent, send: send}
+	u := uiModel{m: New(roots), a: a, st: st, repoRoot: repoRoot, current: current, roots: roots,
+		liveAgent: liveAgent, send: send, live: live, closePane: closePane}
 	u.rebuild() // start scoped to the current session
 	_, err := tea.NewProgram(u, tea.WithAltScreen()).Run()
 	return err

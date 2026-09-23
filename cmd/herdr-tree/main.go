@@ -125,5 +125,5 @@ func pane() error {
 			liveAgent = target
 		}
 	}
-	return tui.Run(a, root, st, sessions, current, liveAgent, herdr.AgentPrompt)
+	return tui.Run(a, root, st, sessions, current, liveAgent, herdr.AgentPrompt, herdr.AgentState, herdr.ClosePane)
 }

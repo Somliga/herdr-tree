@@ -404,10 +404,14 @@ func TestSummariseStoresTheRangeAndKeepsTheOverlayOpen(t *testing.T) {
 	from, to := m.Rows()[0].Node, m.Rows()[2].Node
 
 	fa := &fakeAdapter{summary: "it went well"}
-	msg := summariseCmd(fa, st, from, to)().(actionDoneMsg)
+	op := editOp{src: adapter.Session{ID: "s"}, kind: store.KindCompacted, summarise: true, from: from, to: to}
+	msg := editCmd(fa, st, op, nil, nil)().(actionDoneMsg)
 
 	if msg.quit {
 		t.Fatal("summarising must not close the overlay: nothing has been opened")
+	}
+	if !msg.reload {
+		t.Fatal("a not-live edit reloads the tree")
 	}
 	if fa.summarisedFrom != "t1" || fa.summarisedTo != "t3" {
 		t.Fatalf("summarised %q..%q, want t1..t3", fa.summarisedFrom, fa.summarisedTo)
@@ -428,9 +432,11 @@ func TestFailedSummariseStoresNothingAndKeepsTheOverlayOpen(t *testing.T) {
 	st := loadedStore(t)
 	roots := session("s", "t1", "t2")
 	m := New(roots)
+	from, to := m.Rows()[0].Node, m.Rows()[1].Node
 
 	fa := &fakeAdapter{summariseErr: errors.New("claude: credit balance too low")}
-	msg := summariseCmd(fa, st, m.Rows()[0].Node, m.Rows()[1].Node)().(actionDoneMsg)
+	op := editOp{src: adapter.Session{ID: "s"}, kind: store.KindCompacted, summarise: true, from: from, to: to}
+	msg := editCmd(fa, st, op, nil, nil)().(actionDoneMsg)
 
 	if msg.quit {
 		t.Fatal("a failed summarise must not quit: the message would never be seen")
@@ -550,7 +556,7 @@ func TestABlockedAgentSurfacesAndDoesNotGraftInstead(t *testing.T) {
 // shown before a single API call is made.
 func TestSKeyFixesTheRangeEndThenConfirmsBeforeSummarising(t *testing.T) {
 	st := loadedStore(t)
-	fa := &fakeAdapter{summary: "it went well"}
+	fa := &fakeAdapter{summary: "it went well", span: adapter.Span{First: 1, Last: 3}}
 	roots := session("s", "t1", "t2", "t3")
 	u := uiModel{m: New(roots), a: fa, st: st}
 	u.m.Cursor = 2
@@ -568,22 +574,32 @@ func TestSKeyFixesTheRangeEndThenConfirmsBeforeSummarising(t *testing.T) {
 	after2, cmd2 := got.Update(key('s'))
 	got2 := after2.(uiModel)
 	if cmd2 != nil {
+		t.Fatal("the range menu must not act on its own")
+	}
+	if got2.menu != "range" {
+		t.Fatalf("want the range menu, got %q", got2.menu)
+	}
+
+	// enter picks "summarise & compact", the first option in the menu.
+	after2b, cmd2b := got2.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	got2b := after2b.(uiModel)
+	if cmd2b != nil {
 		t.Fatal("summarising must not start before the cost is confirmed")
 	}
 	if fa.summarisedTo != "" {
 		t.Fatal("the adapter was called before confirmation")
 	}
-	if !strings.Contains(got2.confirm, "3 row(s)") {
-		t.Fatalf("the confirmation does not say how much is being summarised:\n%s", got2.confirm)
+	if !strings.Contains(got2b.confirm, "turns 1–3") {
+		t.Fatalf("the confirmation does not say how much is being summarised:\n%s", got2b.confirm)
 	}
-	if !strings.Contains(got2.confirm, "turn t1") || !strings.Contains(got2.confirm, "turn t3") {
-		t.Fatalf("the confirmation does not name both ends:\n%s", got2.confirm)
+	if !strings.Contains(got2b.confirm, "turn t1") || !strings.Contains(got2b.confirm, "turn t3") {
+		t.Fatalf("the confirmation does not name both ends:\n%s", got2b.confirm)
 	}
 
-	after3, cmd3 := got2.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	after3, cmd3 := got2b.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	got3 := after3.(uiModel)
 	if cmd3 == nil {
-		t.Fatal("want summariseCmd once confirmed")
+		t.Fatal("want editCmd once confirmed")
 	}
 	if got3.busy == "" {
 		t.Fatal("want the overlay to say an API call is in flight")
@@ -596,6 +612,9 @@ func TestSKeyFixesTheRangeEndThenConfirmsBeforeSummarising(t *testing.T) {
 	}
 	if fa.summarisedFrom != "t1" || fa.summarisedTo != "t3" {
 		t.Fatalf("summarised %q..%q, want t1..t3 in document order", fa.summarisedFrom, fa.summarisedTo)
+	}
+	if len(fa.spliced) != 1 {
+		t.Fatalf("want one splice, got %+v", fa.spliced)
 	}
 }
 
@@ -750,7 +769,8 @@ func TestNoStatusLineCarriesTheSummary(t *testing.T) {
 
 	// summarising, succeeding
 	st := loadedStore(t)
-	collect(summariseCmd(&fakeAdapter{summary: sum.Text}, st, early, tip)())
+	op := editOp{src: adapter.Session{ID: "s"}, kind: store.KindCompacted, summarise: true, from: early, to: tip}
+	collect(editCmd(&fakeAdapter{summary: sum.Text}, st, op, nil, nil)())
 	// folding back as a graft, succeeding
 	collect(foldBackCmd(&fakeAdapter{}, loadedStore(t), early, "/repo", sum, "", nil)())
 	// folding back as a message, succeeding
@@ -910,7 +930,9 @@ func TestEscapingTheCostDialogKeepsTheRange(t *testing.T) {
 	u.m.BeginRange()
 	u.m.Cursor = 0
 
-	after, _ := u.Update(key('s'))
+	afterMenu, _ := u.Update(key('s'))
+	// enter picks "summarise & compact", the first option in the menu.
+	after, _ := afterMenu.(uiModel).Update(tea.KeyMsg{Type: tea.KeyEnter})
 	got := after.(uiModel)
 	if got.confirm == "" {
 		t.Fatal("setup: want the cost dialog")
