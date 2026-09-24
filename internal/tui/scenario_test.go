@@ -383,13 +383,39 @@ func checkHangsUnder(t *testing.T, u uiModel, child, first, parent, at string) {
 	if rows[c].Node.Node.ID != first || !strings.Contains(text, "↳ "+shortID(child)) {
 		t.Errorf("%s starts at %q, want %s marked ↳:\n%s", shortID(child), text, first, strings.Join(screen(u), "\n"))
 	}
-	// Body rows of the parent's turn may sit between; a graft comes right
-	// after the entry it left, before the next turn of the parent.
-	indented := rows[c].Depth > rows[p].Depth
-	if c != p+1 || !indented {
-		t.Errorf("%s at row %d depth %d, want right under %s's %s (row %d depth %d):\n%s",
-			shortID(child), c, rows[c].Depth, shortID(parent), at, p, rows[p].Depth, strings.Join(screen(u), "\n"))
+	// A graft is lifted to render as if it hung directly off its turn's own
+	// HEAD (§5.3d, and orderedChildren's bodyGrafts lift): body rows first
+	// (in Build's own order — the entry named "at" plus any added since,
+	// such as a later squash's seed), then every graft, so the child's row
+	// comes right after the LAST body row of that turn, not necessarily
+	// right after "at" itself, and exactly one level under the head.
+	head := p
+	for head > 0 && !rows[head].Node.IsHead {
+		head--
 	}
+	after := head + 1
+	for after < len(rows) && rows[after].Node.SessionID == rows[head].Node.SessionID && !rows[after].Node.IsHead {
+		after++
+	}
+	if c != after || rows[c].Depth != rows[head].Depth+1 {
+		t.Errorf("%s at row %d depth %d, want right after %s's turn's body (row %d, head %s at row %d depth %d), one level under it:\n%s",
+			shortID(child), c, rows[c].Depth, shortID(parent), after, rows[head].Node.Node.ID, head, rows[head].Depth, strings.Join(screen(u), "\n"))
+	}
+}
+
+// checkVisibleFolded asserts sid has at least one row in the model's CURRENT
+// fold state — deliberately never calling unfold first. checkHangsUnder,
+// rowOf and checkLines all unfold before looking, so none of them can catch
+// a branch that a folded head is hiding (the common case since Task 20's
+// whole-turn rule almost always grafts on a body row, not the head).
+func checkVisibleFolded(t *testing.T, u uiModel, sid string) {
+	t.Helper()
+	for _, r := range u.m.Rows() {
+		if r.Node.SessionID == sid {
+			return
+		}
+	}
+	t.Errorf("%s has no visible row in the default fold state:\n%s", shortID(sid), strings.Join(screen(u), "\n"))
 }
 
 // checkLines asserts exactly the named sessions have rows.
@@ -453,6 +479,8 @@ func TestScenarioBranchOfABranch(t *testing.T) {
 
 	for _, current := range []string{sidT, b, c} {
 		u := allOf(w.open(current))
+		checkVisibleFolded(t, u, b) // before checkLines/checkHangsUnder unfold everything
+		checkVisibleFolded(t, u, c)
 		checkLines(t, u, sidT, b, c)
 		checkHangsUnder(t, u, b, "b1-p", sidT, "t2-r")
 		checkHangsUnder(t, u, c, "c1-p", b, "b1-r")
@@ -497,7 +525,14 @@ func TestScenarioBranchStartsAfterTheWholeTurn(t *testing.T) {
 
 // A3. §5.3d: the branch off BULLDOG (t2) is always indented under it, bar
 // and all, and TRIPPLEDIP (t3) — the trunk's own tail once the user is on
-// the branch — stays at the root's depth with no bar.
+// the branch — stays at the root's depth with no bar. Deliberately NOT
+// unfolded: BULLDOG's whole-turn graft (Task 20, §2.5b) lands on its REPLY,
+// a body row, and New() folds BULLDOG-p by default. A graft attached under a
+// folded head's body must still render — Rows()'s fold only hides a folded
+// head's own SAME-SESSION body rows, never a graft, wherever in that turn it
+// physically attached — so this exercises the default (folded) state on
+// purpose, not through checkHangsUnder/rowOf/checkLines, which all unfold
+// first and would never catch this.
 func TestScenarioBranchAtBulldogIndentsAndTheTailDoesNot(t *testing.T) {
 	w := newWorld(t)
 	w.trunk(sidT, "APPLE", "BULLDOG", "TRIPPLEDIP")
@@ -506,14 +541,31 @@ func TestScenarioBranchAtBulldogIndentsAndTheTailDoesNot(t *testing.T) {
 	w.typeInto(b, "BRANCH1")
 
 	u := allOf(w.open(b))
-	unfold(u)
-	rows := u.m.Rows()
-	branchRow := rows[rowOf(u, b, "BRANCH1-p")]
-	tailRow := rows[rowOf(u, sidT, "TRIPPLEDIP-p")]
-	bulldogRow := rows[rowOf(u, sidT, "BULLDOG-p")]
+	rows := u.m.Rows() // no unfold: the default (folded) state
 
-	if branchRow.Depth <= bulldogRow.Depth || !branchRow.OnTrunk {
-		t.Fatalf("the branch at BULLDOG must be indented under it with the bar: %+v vs BULLDOG's %+v", branchRow, bulldogRow)
+	find := func(sid, id string) (Row, bool) {
+		for _, r := range rows {
+			if r.Node.SessionID == sid && r.Node.Node.ID == id {
+				return r, true
+			}
+		}
+		return Row{}, false
+	}
+	bulldogRow, ok := find(sidT, "BULLDOG-p")
+	if !ok {
+		t.Fatalf("BULLDOG-p not on screen folded:\n%s", strings.Join(screen(u), "\n"))
+	}
+	branchRow, ok := find(b, "BRANCH1-p")
+	if !ok {
+		t.Fatalf("the branch is invisible while BULLDOG is folded (its graft point, BULLDOG's reply, is a body row):\n%s", strings.Join(screen(u), "\n"))
+	}
+	tailRow, ok := find(sidT, "TRIPPLEDIP-p")
+	if !ok {
+		t.Fatalf("TRIPPLEDIP-p not on screen folded:\n%s", strings.Join(screen(u), "\n"))
+	}
+
+	if branchRow.Depth != bulldogRow.Depth+1 || !branchRow.OnTrunk {
+		t.Fatalf("the branch at BULLDOG must be indented exactly one level under it with the bar: %+v vs BULLDOG's %+v", branchRow, bulldogRow)
 	}
 	if tailRow.Depth != bulldogRow.Depth || tailRow.OnTrunk {
 		t.Fatalf("TRIPPLEDIP is the abandoned tail: root depth, no bar: %+v", tailRow)
@@ -525,6 +577,10 @@ func TestScenarioBranchAtBulldogIndentsAndTheTailDoesNot(t *testing.T) {
 func TestScenarioSquashIntoAcrossBranches(t *testing.T) {
 	w := newWorld(t)
 	b, c := branchesOfBranches(w)
+	// A fresh, never-unfolded uiModel, before selectRange's cursorTo unfolds
+	// the one this test drives.
+	checkVisibleFolded(t, allOf(w.open(sidT)), b)
+	checkVisibleFolded(t, allOf(w.open(sidT)), c)
 
 	// B's own b2..b3 → squash into… → T's last turn → merge here → confirm.
 	u := selectRange(t, allOf(w.open(b)), b, "b2-p", "b3-r", 1)
@@ -630,6 +686,8 @@ func TestScenarioAChainOfReplacements(t *testing.T) {
 	w.typeInto(b, "b1")
 	d := w.branch(sidT, sidT, "t4-r")
 	w.typeInto(d, "d1")
+	checkVisibleFolded(t, allOf(w.open(sidT)), b)
+	checkVisibleFolded(t, allOf(w.open(sidT)), d)
 
 	// B and D each still hang under their turn of the newest T line,
 	// starting at their own first turn.
@@ -795,6 +853,7 @@ func TestScenarioTwoOverlays(t *testing.T) {
 	}
 
 	u := allOf(w.open(tb))
+	checkVisibleFolded(t, u, t1)
 	checkLines(t, u, sidU, t1)
 	checkHangsUnder(t, u, t1, "t1-p", sidU, "u1-r")
 	if st, _ := store.Load(w.repo); st.Branches[tb].ReplacedBy != t1 || st.Labels[store.LabelKey(tb, "t4-p")] != "keep" {

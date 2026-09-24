@@ -308,11 +308,23 @@ func New(roots []*tree.Node) *Model {
 // between a divergence and its branch. This is the one place that ordering
 // is decided, shared by both the folded and unfolded loops in Rows, so the
 // rule is never duplicated.
+//
+// Only n's OWN call (n.IsHead) collects grafts, and it collects them from
+// anywhere in n's own turn — n's direct cross-session children AND any
+// hanging off one of n's body rows, via bodyGrafts. Task 20's whole-turn
+// rule almost always grafts on a reply or a tool result, both body rows,
+// never the head itself, so treating those as if they were n's own direct
+// children is what keeps a branch at a single indent under its turn's head
+// rather than one further indent under the body row it happened to land on
+// — and what keeps it visible when that head is folded: Rows() only hides a
+// folded head's own body ROWS, never what the head's own order returns. A
+// body node's call returns none: the head above it already claimed them, so
+// walking them again from the body row would give them the wrong (deeper)
+// depth and, when unfolded, a duplicate.
 func (m *Model) orderedChildren(n *tree.Node, nOnTrunk bool) (order []*tree.Node, onTrunkOf map[*tree.Node]bool) {
 	// cont is always n's own chain continuing: the next section head in the
-	// SAME session. A graft that happens to be on the trunk no longer takes
-	// its place — it renders as a branch like any other, just first among
-	// them and marked with the bar.
+	// SAME session, always a direct child — Build only ever chains a
+	// session's own turns directly onto its current head.
 	var cont *tree.Node
 	for _, c := range n.Children {
 		if c.IsHead && c.SessionID == n.SessionID {
@@ -320,70 +332,73 @@ func (m *Model) orderedChildren(n *tree.Node, nOnTrunk bool) (order []*tree.Node
 			break
 		}
 	}
+	var body []*tree.Node
+	for _, c := range n.Children {
+		if c.SessionID == n.SessionID && !c.IsHead {
+			body = append(body, c)
+		}
+	}
+	var grafts []*tree.Node
+	if n.IsHead {
+		grafts = bodyGrafts(n)
+	}
 	var trunkGraft *tree.Node
 	if nOnTrunk {
-		for _, c := range n.Children {
-			if c.SessionID != n.SessionID && m.OnTrunk[c.SessionID] {
+		for _, c := range grafts {
+			if m.OnTrunk[c.SessionID] {
 				trunkGraft = c
 				break
 			}
 		}
 	}
 
-	var body, diverge []*tree.Node
 	onTrunkOf = map[*tree.Node]bool{}
-	for _, c := range n.Children {
-		switch {
-		case c == cont:
-			// placed last, below
-		case c.SessionID == n.SessionID && !c.IsHead:
-			// This turn's own body: stays on-trunk exactly when n does.
-			body = append(body, c)
-			onTrunkOf[c] = nOnTrunk
-		case c == trunkGraft:
-			onTrunkOf[c] = true
-		default:
-			diverge = append(diverge, c)
-			onTrunkOf[c] = false
-		}
+	for _, c := range body {
+		// This turn's own body: stays on-trunk exactly when n does.
+		onTrunkOf[c] = nOnTrunk
 	}
 	order = append(order, body...)
 	if trunkGraft != nil {
 		order = append(order, trunkGraft)
+		onTrunkOf[trunkGraft] = true
 	}
-	order = append(order, diverge...)
+	for _, c := range grafts {
+		if c == trunkGraft {
+			continue
+		}
+		order = append(order, c)
+		onTrunkOf[c] = false
+	}
 	if cont != nil {
-		// The bar goes to the trunk graft when there is one, DIRECT child or
-		// not: Task 20's whole-turn rule almost always grafts on a reply, not
-		// the head, so the trunk graft is usually a grandchild here (n's
-		// body row's own child), not a sibling of cont. Either way it is
-		// still a divergence of n's WHOLE turn, so cont — the turn's own
-		// continuation — loses the bar exactly as if the graft sat right
-		// beside it.
-		onTrunkOf[cont] = nOnTrunk && trunkGraft == nil && !m.bodyDivergesFromTrunk(n)
+		// The bar goes to the trunk graft when there is one; the same-session
+		// tail that continues past it is the abandoned one (§5.3d).
+		onTrunkOf[cont] = nOnTrunk && trunkGraft == nil
 		order = append(order, cont)
 	}
 	return order, onTrunkOf
 }
 
-// bodyDivergesFromTrunk reports whether the trunk has already left n's own
-// turn somewhere inside its body — a graft point that lands on a body row
-// (the common case since Task 20's whole-turn rule) is still a divergence of
-// the WHOLE turn, not just of that one row, even though it is n's
-// grandchild rather than n's own child.
-func (m *Model) bodyDivergesFromTrunk(n *tree.Node) bool {
+// bodyGrafts collects every cross-session child anywhere within n's own
+// turn's body, in the order Build attached them: n's own direct
+// cross-session children, then any that landed on one of n's body rows
+// instead — the common case since Task 20's whole-turn rule almost always
+// grafts on a reply or a tool result. A body row has no same-session
+// children of its own (Build only ever chains a session's own turns onto
+// its current HEAD, never onto a body row), so this recursion only ever
+// goes one level past n in practice — the same invariant bodyCount relies
+// on — but is written to hold if that ever changes.
+func bodyGrafts(n *tree.Node) []*tree.Node {
+	var out []*tree.Node
 	for _, c := range n.Children {
 		if c.SessionID != n.SessionID {
-			if m.OnTrunk[c.SessionID] {
-				return true
-			}
+			out = append(out, c)
 			continue
 		}
-		if !c.IsHead && m.bodyDivergesFromTrunk(c) {
-			return true
+		if !c.IsHead {
+			out = append(out, bodyGrafts(c)...)
 		}
 	}
-	return false
+	return out
 }
 
 // childDepth is the shared graft/body indent rule, applied identically by

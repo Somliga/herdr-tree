@@ -11,6 +11,11 @@ import (
 	"herdr-tree/internal/tree"
 )
 
+// unfoldAll clears every fold, mirroring scenario_test.go's unfold: a test
+// about depth or reachability, not about the default fold state, should not
+// have to account for New()'s auto-fold of section heads with children.
+func unfoldAll(m *Model) { m.Folded = map[*tree.Node]bool{} }
+
 func chain(ids ...string) *tree.Node {
 	var head, prev *tree.Node
 	for i, id := range ids {
@@ -178,21 +183,26 @@ func TestALongSingleSessionRendersEveryRowAtDepthZero(t *testing.T) {
 
 func TestGraftedSessionIndentsOneLevelAndStaysThere(t *testing.T) {
 	root := chain("n1", "n2", "n3")
+	root.IsHead = true // chain() doesn't set it; only a head's own call collects grafts
 	child := graftChain("s2", root.Children[0].Children[0], "m1", "m2", "m3") // grafted from n3
 
 	m := New([]*tree.Node{root})
+	unfoldAll(m) // this test is about depth, not the default fold state
 	byID := map[string]Row{}
 	for _, r := range m.Rows() {
 		byID[r.Node.Node.ID] = r
 	}
-	for _, id := range []string{"n1", "n2", "n3"} {
-		if byID[id].Depth != 0 {
-			t.Fatalf("%s at depth %d want 0", id, byID[id].Depth)
+	if byID["n1"].Depth != 0 {
+		t.Fatalf("n1 (the head) at depth %d want 0", byID["n1"].Depth)
+	}
+	for _, id := range []string{"n2", "n3"} {
+		if byID[id].Depth != 1 {
+			t.Fatalf("%s (body) at depth %d want 1", id, byID[id].Depth)
 		}
 	}
 	for _, id := range []string{"m1", "m2", "m3"} {
 		if byID[id].Depth != 1 {
-			t.Fatalf("%s at depth %d want 1: grafted session should sit one level deeper, and stay there for every turn of it", id, byID[id].Depth)
+			t.Fatalf("%s at depth %d want 1: grafted session should sit one level deeper (than the head, same as the body), and stay there for every turn of it", id, byID[id].Depth)
 		}
 	}
 	_ = child
@@ -200,10 +210,12 @@ func TestGraftedSessionIndentsOneLevelAndStaysThere(t *testing.T) {
 
 func TestTwoGraftsFromTheSameTurnShareADepth(t *testing.T) {
 	root := chain("n1")
+	root.IsHead = true // chain() doesn't set it; only a head's own call collects grafts
 	graftChain("first", root, "a1")
 	graftChain("second", root, "b1")
 
 	m := New([]*tree.Node{root})
+	unfoldAll(m) // this test is about depth, not the default fold state
 	byID := map[string]Row{}
 	for _, r := range m.Rows() {
 		byID[r.Node.Node.ID] = r
@@ -222,10 +234,13 @@ func TestMaxDepthTracksGraftNestingNotTurnCount(t *testing.T) {
 	// track how many graft edges are nested, which here is 2 regardless of
 	// how many turns each session has.
 	root := chain("n1", "n2", "n3", "n4", "n5")                                                                       // 5 turns, no grafts: depth must stay 0
+	root.IsHead = true                                                                                                // chain() doesn't set it; only a head's own call collects grafts
 	mid := graftChain("s2", root.Children[0].Children[0].Children[0].Children[0], "m1", "m2", "m3", "m4", "m5", "m6") // grafted, +6 turns
+	mid.IsHead = true                                                                                                 // same, for the nested graft one level down
 	graftChain("s3", mid.Children[0].Children[0], "o1", "o2")                                                         // grafted again, one level deeper
 
 	m := New([]*tree.Node{root})
+	unfoldAll(m) // this test is about depth, not the default fold state
 	max := 0
 	for _, r := range m.Rows() {
 		if r.Depth > max {
@@ -243,6 +258,7 @@ func TestMaxDepthTracksGraftNestingNotTurnCount(t *testing.T) {
 // covers the case where they do not.
 func TestScopeToReturnsOnlyTheNamedSessionPlusItsGraftedChildren(t *testing.T) {
 	s1 := chain("n1", "n2")
+	s1.IsHead = true                             // chain() doesn't set it; only a head's own call collects grafts
 	graftChain("s2", s1.Children[0], "m1", "m2") // grafted from n2, session s2
 	s3 := &tree.Node{                            // unrelated third session
 		Node: adapter.Node{ID: "o1", Title: "turn o1"}, SessionID: "s3", IsSessionRoot: true,
@@ -253,6 +269,7 @@ func TestScopeToReturnsOnlyTheNamedSessionPlusItsGraftedChildren(t *testing.T) {
 		t.Fatalf("ScopeTo should return exactly s1's root, got %+v", scoped)
 	}
 	m := New(scoped)
+	unfoldAll(m) // this test is about depth/reachability, not the default fold state
 	got := ids(m.Rows())
 	want := map[string]bool{"n1": true, "n2": true, "m1": true, "m2": true}
 	if len(got) != len(want) {
@@ -617,7 +634,12 @@ func TestFoldedHeadReportsItsBodySize(t *testing.T) {
 	}
 }
 
-func TestGraftFromABodyTurnIndentsOneLevelFurtherThanTheBody(t *testing.T) {
+// TestGraftFromABodyTurnIndentsOneLevelUnderItsHead is §5.3d plus the
+// lifting fix: a graft that lands on a body row (h0-b0, not the head h0 —
+// the common case since Task 20's whole-turn rule) is lifted to render
+// beside h0's other grafts, at h0's own depth+1, the SAME depth as the body
+// row it left, not one further indent under it.
+func TestGraftFromABodyTurnIndentsOneLevelUnderItsHead(t *testing.T) {
 	st := &store.Store{Branches: map[string]store.Branch{}}
 	st.Add("s2", store.Branch{GraftedFrom: store.From{SessionID: "s1", Node: "h0-b0"}})
 	sess1 := realisticSession("s1", 2, 4) // small: h0,h0-b0,h0-b1,h1,h1-b0
@@ -625,9 +647,7 @@ func TestGraftFromABodyTurnIndentsOneLevelFurtherThanTheBody(t *testing.T) {
 
 	roots := tree.Build([]adapter.Session{sess1, sess2}, st)
 	m := New(roots)
-	for n := range m.Folded {
-		delete(m.Folded, n)
-	}
+	unfoldAll(m)
 	byID := map[string]Row{}
 	for _, r := range m.Rows() {
 		byID[r.Node.Node.ID] = r
@@ -635,8 +655,75 @@ func TestGraftFromABodyTurnIndentsOneLevelFurtherThanTheBody(t *testing.T) {
 	if byID["h0-b0"].Depth != 1 {
 		t.Fatalf("h0-b0 (body) depth %d want 1", byID["h0-b0"].Depth)
 	}
-	if byID["m1"].Depth != 2 {
-		t.Fatalf("grafted session should sit one level deeper than the body turn it branched from: got %d want 2", byID["m1"].Depth)
+	if byID["m1"].Depth != 1 {
+		t.Fatalf("a graft off a body row is lifted to its head's depth+1, same as the body row: got %d want 1", byID["m1"].Depth)
+	}
+}
+
+// TestGraftFromAToolCallBodyNodeStaysVisibleWhenFolded is review item (b):
+// the same lifting as TestGraftFromABodyTurnIndentsOneLevelUnderItsHead, but
+// grafted at a TOOL-CALL body row (h0-b1, KindToolCall) instead of a reply,
+// and deliberately NOT unfolded — New() folds h0 by default, and a graft
+// must still show: Rows()'s fold only ever hides a folded head's own
+// SAME-SESSION body rows, never a graft, wherever in that turn it attached.
+func TestGraftFromAToolCallBodyNodeStaysVisibleWhenFolded(t *testing.T) {
+	st := &store.Store{Branches: map[string]store.Branch{}}
+	st.Add("s2", store.Branch{GraftedFrom: store.From{SessionID: "s1", Node: "h0-b1"}})
+	sess1 := realisticSession("s1", 2, 4) // small: h0,h0-b0,h0-b1(tool-call),h1,h1-b0
+	sess2 := adapter.Session{ID: "s2", Title: "t-s2", Nodes: []adapter.Node{{ID: "m1", Title: "branch", Kind: adapter.KindHuman}}}
+
+	roots := tree.Build([]adapter.Session{sess1, sess2}, st)
+	m := New(roots)
+	// No unfold: the default (folded) state is the point of this test.
+	byID := map[string]Row{}
+	for _, r := range m.Rows() {
+		byID[r.Node.Node.ID] = r
+	}
+	h0, ok := byID["h0"]
+	if !ok {
+		t.Fatal("h0 not on screen folded")
+	}
+	m1, ok := byID["m1"]
+	if !ok {
+		t.Fatal("the graft off a tool-call body row is invisible while its head is folded")
+	}
+	if m1.Depth != h0.Depth+1 {
+		t.Fatalf("a graft off a tool-call body row is lifted to its head's depth+1: got %d want %d", m1.Depth, h0.Depth+1)
+	}
+	if _, ok := byID["h0-b1"]; ok {
+		t.Fatal("h0-b1 itself (the tool call the graft left) should stay hidden while h0 is folded")
+	}
+}
+
+// TestOldStyleGraftAtAPromptRendersLikeANewOne is review item (d): a branch
+// grafted directly at a HEAD entry (how every graft worked before Task 20's
+// whole-turn rule, and how any graft written before that fix still reads)
+// must render exactly the same as one lifted from a body row — depth+1,
+// visible while its head is folded — so old and new branches are
+// indistinguishable in the tree.
+func TestOldStyleGraftAtAPromptRendersLikeANewOne(t *testing.T) {
+	st := &store.Store{Branches: map[string]store.Branch{}}
+	st.Add("s2", store.Branch{GraftedFrom: store.From{SessionID: "s1", Node: "h0"}})
+	sess1 := realisticSession("s1", 2, 4) // small: h0,h0-b0,h0-b1,h1,h1-b0
+	sess2 := adapter.Session{ID: "s2", Title: "t-s2", Nodes: []adapter.Node{{ID: "m1", Title: "branch", Kind: adapter.KindHuman}}}
+
+	roots := tree.Build([]adapter.Session{sess1, sess2}, st)
+	m := New(roots)
+	// No unfold: the default (folded) state is the point of this test.
+	byID := map[string]Row{}
+	for _, r := range m.Rows() {
+		byID[r.Node.Node.ID] = r
+	}
+	h0, ok := byID["h0"]
+	if !ok {
+		t.Fatal("h0 not on screen folded")
+	}
+	m1, ok := byID["m1"]
+	if !ok {
+		t.Fatal("an old-style graft directly at the head is invisible while it is folded")
+	}
+	if m1.Depth != h0.Depth+1 {
+		t.Fatalf("an old-style graft at the head: got depth %d want %d", m1.Depth, h0.Depth+1)
 	}
 }
 
@@ -655,19 +742,24 @@ func TestSelectStillCarriesEveryEntryDespiteFolding(t *testing.T) {
 
 func TestGraftedChildIndentsOneLevelInAScopedView(t *testing.T) {
 	s1 := chain("n1", "n2")
+	s1.IsHead = true // chain() doesn't set it; only a head's own call collects grafts
 	graftChain("s2", s1.Children[0], "m1")
 
 	scoped := ScopeTo([]*tree.Node{s1}, "s1")
 	m := New(scoped)
+	unfoldAll(m) // this test is about depth, not the default fold state
 	byID := map[string]Row{}
 	for _, r := range m.Rows() {
 		byID[r.Node.Node.ID] = r
 	}
-	if byID["n1"].Depth != 0 || byID["n2"].Depth != 0 {
-		t.Fatalf("s1's own turns should stay at depth 0 in the scoped view: n1=%d n2=%d", byID["n1"].Depth, byID["n2"].Depth)
+	if byID["n1"].Depth != 0 {
+		t.Fatalf("s1's own head should stay at depth 0 in the scoped view: n1=%d", byID["n1"].Depth)
+	}
+	if byID["n2"].Depth != 1 {
+		t.Fatalf("s1's own body depth %d want 1", byID["n2"].Depth)
 	}
 	if byID["m1"].Depth != 1 {
-		t.Fatalf("grafted child depth %d want 1", byID["m1"].Depth)
+		t.Fatalf("grafted child depth %d want 1 (same as the body it left, lifted under the head)", byID["m1"].Depth)
 	}
 }
 
