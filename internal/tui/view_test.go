@@ -251,6 +251,107 @@ func TestOnlyTheLastTurnOfTheCurrentSessionIsMarkedCurrent(t *testing.T) {
 	}
 }
 
+// familyFixture builds §5.3d's worked example: a trunk with two branches off
+// the same turn (BITTEREND) — b and its sibling sib — plus an unrelated
+// fourth session that must never appear once scoped. Titles are unique per
+// row (the branch/sibling's copied BITTEREND is Superseded and gets no row
+// of its own, so "turn BITTEREND" is unambiguous), which is what lets the
+// tests below key off rendered text.
+func familyFixture() ([]*tree.Node, *store.Store) {
+	trunk := mkTypedSess("trunk",
+		turn("hello", adapter.KindHuman),
+		turn("BING", adapter.KindHuman),
+		turn("BITTEREND", adapter.KindHuman),
+		turn("FAN", adapter.KindHuman),
+	)
+	branch := mkTypedSess("b",
+		turn("BITTEREND", adapter.KindHuman), // copied graft point, Superseded
+		turn("reply", adapter.KindAssistant),
+		turn("own2", adapter.KindHuman),
+	)
+	sibling := mkTypedSess("sib",
+		turn("BITTEREND", adapter.KindHuman), // copied graft point, Superseded
+		turn("other", adapter.KindHuman),
+	)
+	unrelated := mkTypedSess("unrelated", turn("elsewhere", adapter.KindHuman))
+
+	st := &store.Store{Version: 1, Branches: map[string]store.Branch{
+		"b":   {GraftedFrom: store.From{SessionID: "trunk", Node: "BITTEREND"}},
+		"sib": {GraftedFrom: store.From{SessionID: "trunk", Node: "BITTEREND"}},
+	}}
+	return tree.Build([]adapter.Session{trunk, branch, sibling, unrelated}, st), st
+}
+
+// TestFamilyScopeShowsTheWholeFamily is spec test 1: from a branch session as
+// current, the default scope's rows include the parent's rows and a sibling
+// branch — but not an unrelated session.
+func TestFamilyScopeShowsTheWholeFamily(t *testing.T) {
+	roots, st := familyFixture()
+	u := uiModel{m: New(roots), st: st, roots: roots, current: "b", width: 80, height: 40}
+	u.rebuild()
+
+	got := map[string]bool{}
+	for _, r := range u.m.Rows() {
+		got[r.Node.SessionID] = true
+	}
+	for _, want := range []string{"trunk", "b", "sib"} {
+		if !got[want] {
+			t.Errorf("family scope (current=b) is missing session %q: %v", want, got)
+		}
+	}
+	if got["unrelated"] {
+		t.Error("an unrelated session leaked into the family scope")
+	}
+}
+
+// TestTrunkBarMarksExactlyThePathThroughTheFamily is spec test 2: the bar is
+// on the parent's rows up to and including the branch point, then the
+// branch's own rows — not the parent's tail after the branch point, and not
+// the sibling.
+func TestTrunkBarMarksExactlyThePathThroughTheFamily(t *testing.T) {
+	roots, st := familyFixture()
+	u := uiModel{m: New(roots), st: st, roots: roots, current: "b", width: 80, height: 40}
+	u.rebuild()
+	unfold(u)
+
+	rows := u.m.Rows()
+	lines := strings.Split(u.View(), "\n")
+	byTitle := map[string]int{}
+	for i, r := range rows {
+		byTitle[r.Node.Node.Title] = i
+	}
+	onBar := func(title string) bool {
+		i, ok := byTitle["turn "+title]
+		if !ok {
+			t.Fatalf("no row titled %q", "turn "+title)
+		}
+		return strings.Contains(lines[i], "▎")
+	}
+	for _, want := range []string{"hello", "BING", "BITTEREND", "reply", "own2"} {
+		if !onBar(want) {
+			t.Errorf("%q should be on b's path through the family (barred): %q", want, lines[byTitle["turn "+want]])
+		}
+	}
+	for _, want := range []string{"FAN", "other"} {
+		if onBar(want) {
+			t.Errorf("%q should NOT be barred (parent's tail / sibling): %q", want, lines[byTitle["turn "+want]])
+		}
+	}
+}
+
+// TestNoCurrentSessionMeansNoTrunkBar is spec test 4: with no current
+// session there is no bar on any row.
+func TestNoCurrentSessionMeansNoTrunkBar(t *testing.T) {
+	roots, st := familyFixture()
+	u := uiModel{m: New(roots), st: st, roots: roots, current: "", width: 80, height: 40}
+	u.rebuild()
+	unfold(u)
+
+	if strings.Contains(u.View(), "▎") {
+		t.Fatalf("no current session, but a bar was drawn:\n%s", u.View())
+	}
+}
+
 func TestScopeToggleKeepsCursorOnTheSameNode(t *testing.T) {
 	s1 := chain("n1", "n2")
 	s2 := &tree.Node{Node: adapter.Node{ID: "o1", Title: "turn o1"}, SessionID: "s2", IsSessionRoot: true}

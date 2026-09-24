@@ -237,6 +237,10 @@ func TestMaxDepthTracksGraftNestingNotTurnCount(t *testing.T) {
 	}
 }
 
+// s1 here is itself a top-level root, so its family (§5.3d) is exactly its
+// own tree — this is the case where the pre- and post-spec behaviours
+// coincide; TestScopeToFindsABranchThatRendersFromWhereItDiverges below
+// covers the case where they do not.
 func TestScopeToReturnsOnlyTheNamedSessionPlusItsGraftedChildren(t *testing.T) {
 	s1 := chain("n1", "n2")
 	graftChain("s2", s1.Children[0], "m1", "m2") // grafted from n2, session s2
@@ -263,7 +267,14 @@ func TestScopeToReturnsOnlyTheNamedSessionPlusItsGraftedChildren(t *testing.T) {
 
 // TestScopeToFindsABranchThatRendersFromWhereItDiverges guards tree.Build's
 // dedup (§5.3b): the branch's own session-root marker moves off its copied
-// prefix onto its first new turn, and ScopeTo must still find it there.
+// prefix onto its first new turn, buried inside the trunk's tree rather than
+// sitting at a top-level root of its own — ScopeTo must still find it there.
+//
+// Per §5.3d the default scope changed from "the session's own tree" to "the
+// whole family": the top-level root containing the session, not the node
+// that carries the session's own root marker. So unlike the pre-spec version
+// of this test, ScopeTo("branch") returns the FAMILY's root (trunk's "hello")
+// with everything in it, not a one-node slice rooted at "TRIPPLEDIP".
 func TestScopeToFindsABranchThatRendersFromWhereItDiverges(t *testing.T) {
 	mkSess := func(id string, ids ...string) adapter.Session {
 		s := adapter.Session{ID: id, Title: "t-" + id, Updated: time.Now()}
@@ -281,16 +292,19 @@ func TestScopeToFindsABranchThatRendersFromWhereItDiverges(t *testing.T) {
 	}, st)
 
 	scoped := ScopeTo(roots, "branch")
-	if len(scoped) != 1 {
-		t.Fatalf("ScopeTo must still find the branch, got %+v", scoped)
-	}
-	if scoped[0].Node.ID != "TRIPPLEDIP" {
-		t.Fatalf("ScopeTo must land on the branch's own first turn, got %+v", scoped[0])
+	if len(scoped) != 1 || scoped[0] != roots[0] {
+		t.Fatalf("ScopeTo must return the family's top-level root, got %+v", scoped)
 	}
 	m := New(scoped)
 	got := ids(m.Rows())
-	if len(got) != 1 || got[0] != "TRIPPLEDIP" {
-		t.Fatalf("scoped rows should show only the branch's own turn(s), got %v", got)
+	want := map[string]bool{"hello": true, "BING": true, "BITTEREND": true, "FAN": true, "TRIPPLEDIP": true}
+	if len(got) != len(want) {
+		t.Fatalf("family scope should show the trunk's turns plus the branch's own turn, got %v", got)
+	}
+	for _, id := range got {
+		if !want[id] {
+			t.Fatalf("unexpected node %q in family scope: %v", id, got)
+		}
 	}
 }
 

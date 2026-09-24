@@ -18,6 +18,11 @@ const (
 	StyleBroken
 	StyleCurrent
 	StyleRange
+	// StyleTrunk is the left-margin bar marking your path through the family
+	// (§5.3d) — a separate segment, not a row colour, since it overrides the
+	// "no trunk style" rule below with a margin mark rather than a row
+	// colour.
+	StyleTrunk
 )
 
 // The palette lives here alone so it can be made configurable without
@@ -37,6 +42,7 @@ var palette = map[StyleKey]lipgloss.Style{
 	StyleBroken:     lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "160", Dark: "203"}),
 	StyleCurrent:    lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "28", Dark: "114"}),
 	StyleRange:      lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "90", Dark: "183"}).Bold(true),
+	StyleTrunk:      lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "30", Dark: "51"}),
 }
 
 // styleFor picks the row's style key from what produced it, not from where it

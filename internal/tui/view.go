@@ -149,6 +149,20 @@ func renderRow(r Row, selected bool, currentSession string, width int) (string, 
 	return line, key
 }
 
+// rowBar is the left-margin bar marking the row's place on the trunk
+// (§5.3d), in plain text so it stays assertable — View applies StyleTrunk.
+// hasCurrent is false when there is no current session (an empty trunk),
+// in which case no row gets a bar, present or blank.
+func rowBar(r Row, hasCurrent bool) string {
+	if !hasCurrent {
+		return ""
+	}
+	if r.OnTrunk {
+		return "▎ "
+	}
+	return "  "
+}
+
 // cutNote is the cut marker, drawn apart from its row so View can mute it
 // whatever the row's own style (spec §5.4). "" when the row has none.
 func cutNote(n *tree.Node) string {
@@ -750,13 +764,24 @@ func (u uiModel) View() string {
 		height = 5
 	}
 	rows, start, total := u.m.Window(height)
+	// A bar takes 2 columns of its own, on top of the marker's 2, so the row
+	// text is narrowed to keep the whole line within u.width.
+	hasCurrent := len(u.m.OnTrunk) > 0
+	barWidth := 0
+	if hasCurrent {
+		barWidth = 2
+	}
 	for i, r := range rows {
 		marker := "  "
 		if start+i == u.m.Cursor {
 			marker = "> "
 		}
-		text, key := renderRow(r, start+i == u.m.Cursor, u.current, u.width-2)
-		b.WriteString(marker + render(key, text) + render(StyleTool, cutNote(r.Node)) + "\n")
+		bar := rowBar(r, hasCurrent)
+		if r.OnTrunk {
+			bar = render(StyleTrunk, bar)
+		}
+		text, key := renderRow(r, start+i == u.m.Cursor, u.current, u.width-2-barWidth)
+		b.WriteString(marker + bar + render(key, text) + render(StyleTool, cutNote(r.Node)) + "\n")
 	}
 	if total > 0 {
 		b.WriteString(fmt.Sprintf("\n(%d/%d)\n", u.m.Cursor+1, total))

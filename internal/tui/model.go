@@ -206,14 +206,20 @@ func (m *Model) Window(height int) ([]Row, int, int) {
 // recover can catch. That kills the plugin process outright rather than
 // merely freezing the view. Graft edges live in a plain JSON file that can be
 // hand-edited or corrupted into a cycle, so this is reachable.
-// ScopeTo narrows the forest to one session's own tree: its turns, plus any
-// session grafted from it, nested.
+// ScopeTo narrows the forest to sessionID's family (§5.3d): the top-level
+// root whose tree contains it, with every branch anywhere in that tree —
+// not just the session's own turns and what was grafted from it. A branch
+// deep in a long conversation is buried inside its family's root, not a
+// root of its own, so this walks each top-level root looking for sessionID
+// rather than searching for a node that carries it directly.
 //
-// This is the default because it is the actual workflow — go back to an
-// earlier point in THIS conversation and branch from it. A repo-wide forest
-// is the rarer case (looking back at an old branch), and on a real repo it is
-// dozens of sessions of somebody else's turns between you and the one you
-// wanted. Pi's tree is one session for the same reason.
+// This is the default because it is the actual workflow — see the whole
+// conversation you are in, including the point you branched from and
+// anything else that branched from the same place, not just your own line
+// forward. A repo-wide forest is the rarer case (looking back at an
+// unrelated old conversation), and on a real repo it is dozens of sessions
+// of somebody else's turns between you and the one you wanted. `a` still
+// shows all sessions.
 //
 // Returns nil when the session is not in the forest, so the caller can fall
 // back to showing everything rather than showing nothing.
@@ -221,29 +227,32 @@ func ScopeTo(roots []*tree.Node, sessionID string) []*tree.Node {
 	if sessionID == "" {
 		return nil
 	}
-	var found *tree.Node
-	var walk func(n *tree.Node)
-	seen := map[*tree.Node]bool{}
-	walk = func(n *tree.Node) {
-		if found != nil || seen[n] {
-			return
+	contains := func(root *tree.Node) bool {
+		found := false
+		seen := map[*tree.Node]bool{}
+		var walk func(n *tree.Node)
+		walk = func(n *tree.Node) {
+			if found || seen[n] {
+				return
+			}
+			seen[n] = true
+			if n.IsSessionRoot && n.SessionID == sessionID {
+				found = true
+				return
+			}
+			for _, c := range n.Children {
+				walk(c)
+			}
 		}
-		seen[n] = true
-		if n.IsSessionRoot && n.SessionID == sessionID {
-			found = n
-			return
-		}
-		for _, c := range n.Children {
-			walk(c)
-		}
+		walk(root)
+		return found
 	}
 	for _, r := range roots {
-		walk(r)
+		if contains(r) {
+			return []*tree.Node{r}
+		}
 	}
-	if found == nil {
-		return nil
-	}
-	return []*tree.Node{found}
+	return nil
 }
 
 func New(roots []*tree.Node) *Model {
