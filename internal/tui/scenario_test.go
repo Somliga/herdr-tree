@@ -792,3 +792,51 @@ func TestScenarioALabelSetOnAReplacementReplacesTheOlderOne(t *testing.T) {
 		t.Errorf("after a reload t3 renders %q, want no label", got)
 	}
 }
+
+// Two overlays loaded from the same store both show T. The first drops t2;
+// the second, still showing the old tree, squashes t3..t4 of T. Nothing is
+// lost on disk, but the second edit is spliced from the stale T and its
+// replaced_by wins the merge: the first overlay's line becomes an orphan
+// root carrying copies of T's turns (BUG 5).
+func TestScenarioTwoOverlaysEditTheSameLine(t *testing.T) {
+	w := newWorld(t)
+	w.trunk(sidT, "t1", "t2", "t3", "t4")
+	u1, u2 := w.open(sidT), w.open(sidT)
+
+	u1 = drive(t, selectRange(t, u1, sidT, "t2-p", "t2-r", 2), enter)
+	r1 := w.replacement(sidT)
+	u2 = drive(t, selectRange(t, u2, sidT, "t3-p", "t4-r", 0), enter)
+	if !strings.HasPrefix(u2.status, "squashed "+shortID(sidT)+" → ") {
+		t.Fatalf("second overlay's squash: %q", u2.status)
+	}
+	r2 := w.replacement(sidT)
+
+	// What happens today: every transcript stays, the second edit wins T,
+	// and the first edit's line is still in the store and on screen.
+	for _, sid := range []string{sidT, r1, r2} {
+		if _, err := os.Stat(w.path(sid)); err != nil {
+			t.Fatalf("%s is gone: %v", shortID(sid), err)
+		}
+	}
+	st, _ := store.Load(w.repo)
+	if r2 == r1 || st.Branches[r1].Replaces != sidT || st.Branches[r2].Replaces != sidT {
+		t.Fatalf("store: T→%s, %s replaces %q, %s replaces %q", shortID(r2),
+			shortID(r1), st.Branches[r1].Replaces, shortID(r2), st.Branches[r2].Replaces)
+	}
+	if got := rowText(w.open(sidT), r1, "t3-p"); got != "" {
+		t.Fatalf("scoped to T, the first overlay's line shows: %q", got)
+	}
+	u := allOf(w.open(sidT))
+	checkLines(t, u, r1, r2)
+	if got := rowText(u, r2, "t2-p"); got == "" {
+		t.Fatalf("the winning line lost t2, which only the other overlay dropped:\n%s", strings.Join(screen(u), "\n"))
+	}
+
+	t.Run("the stale overlay's edit does not orphan the other's", func(t *testing.T) {
+		t.Skip("BUG 5: a splice from a stale overlay reads the replaced T; its replaced_by wins and the first edit's line is left an unmarked root")
+		if r2 != r1 {
+			t.Errorf("T resolves to %s, want the first edit's %s kept (the stale edit refused)", shortID(r2), shortID(r1))
+		}
+		checkNoCopies(t, u)
+	})
+}
