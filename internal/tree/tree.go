@@ -94,9 +94,7 @@ func attachPoint(chain []*Node, graftNode string, parentNodes map[string]*Node) 
 // keeps its turns' uuids, so a label follows its turn through every edit
 // (§5.3c).
 func label(s *store.Store, sid, turn string) string {
-	seen := map[string]bool{}
-	for id := sid; id != "" && !seen[id]; id = s.Branches[id].Replaces {
-		seen[id] = true
+	for _, id := range s.Versions(sid) {
 		if l, ok := s.Labels[store.LabelKey(id, turn)]; ok {
 			return l
 		}
@@ -244,9 +242,7 @@ func Build(sessions []adapter.Session, s *store.Store) []*Node {
 		if hidden[sess.ID] {
 			continue
 		}
-		seen := map[string]bool{}
-		for id := sess.ID; id != "" && !seen[id]; id = s.Branches[id].Replaces {
-			seen[id] = true
+		for _, id := range s.Versions(sess.ID) {
 			cut := s.Branches[id].Cut
 			if cut == nil {
 				continue

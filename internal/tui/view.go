@@ -498,6 +498,11 @@ func (u uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch msg.Type {
 			case tea.KeyEnter:
 				n := u.labelling
+				// The label shown is looked up along the line's older
+				// versions, so the last one set must replace theirs (§5.3c).
+				for _, v := range u.st.Versions(n.SessionID) {
+					u.st.SetLabel(v, n.Node.ID, "")
+				}
 				u.st.SetLabel(n.SessionID, n.Node.ID, strings.TrimSpace(u.labelText))
 				n.Label = strings.TrimSpace(u.labelText)
 				if err := u.st.Save(); err != nil {

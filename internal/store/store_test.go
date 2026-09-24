@@ -3,6 +3,7 @@ package store
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -393,5 +394,18 @@ func TestSaveNeverClearsAReplacement(t *testing.T) {
 	after, _ := Load("/repo")
 	if after.Branches["old"].ReplacedBy != "new" {
 		t.Fatal("a stale save cleared replaced_by")
+	}
+}
+
+func TestVersionsWalksReplacesNewestFirstAndStopsOnACycle(t *testing.T) {
+	s := &Store{Branches: map[string]Branch{}}
+	s.Replace("a", "b", Branch{})
+	s.Replace("b", "c", Branch{})
+	if got := strings.Join(s.Versions("c"), " "); got != "c b a" {
+		t.Fatalf("versions %q, want c b a", got)
+	}
+	s.Branches["a"] = Branch{Replaces: "c"} // hand-edited cycle
+	if got := strings.Join(s.Versions("c"), " "); got != "c b a" {
+		t.Fatalf("versions %q on a cycle, want c b a", got)
 	}
 }

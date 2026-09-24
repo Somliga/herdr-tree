@@ -230,6 +230,18 @@ func (s *Store) Resolve(sessionID string) string {
 	return sessionID // a cycle in a hand-edited store: stop where it closed
 }
 
+// Versions lists sessionID and then every older version of its line, newest
+// first, following replaces through any number of splices.
+func (s *Store) Versions(sessionID string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for id := sessionID; id != "" && !seen[id]; id = s.Branches[id].Replaces {
+		seen[id] = true // a cycle in a hand-edited store: stop where it closed
+		out = append(out, id)
+	}
+	return out
+}
+
 // ErrNoPath means Save was called on a Store that did not come from Load, so
 // it has no file to write to. Without this guard filepath.Dir("") is ".", and
 // Save would silently create tree.json in the process's working directory.

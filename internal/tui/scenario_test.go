@@ -752,3 +752,43 @@ func TestScenarioTwoOverlays(t *testing.T) {
 		}
 	})
 }
+
+// §5.3c: a label carried into a replacement is the one last set, so
+// clearing it on the replacement clears it, and re-labelling replaces it.
+func TestScenarioALabelSetOnAReplacementReplacesTheOlderOne(t *testing.T) {
+	w := newWorld(t)
+	w.trunk(sidT, "t1", "t2", "t3")
+	u := drive(t, cursorTo(t, w.open(sidT), sidT, "t3-p"), key('L'))
+	u = drive(t, u, append(typed("keep"), enter)...)
+	u = drive(t, selectRange(t, u, sidT, "t1-p", "t1-r", 0), enter)
+	t1 := w.replacement(sidT)
+	if got := rowText(u, t1, "t3-p"); !strings.Contains(got, "★ keep") {
+		t.Fatalf("t3 in the replacement renders %q, want the label carried over", got)
+	}
+
+	// Re-labelling first: both steps share the one store, so the order
+	// matters, and each needs the label it replaces.
+	u = drive(t, cursorTo(t, u, t1, "t3-p"), key('L'))
+	u = drive(t, u, append(typed("!"), enter)...)
+	if got := rowText(w.open(t1), t1, "t3-p"); !strings.Contains(got, "★ keep!") {
+		t.Errorf("after a reload t3 renders %q, want the new label", got)
+	}
+	st, _ := store.Load(w.repo)
+	if _, ok := st.Labels[store.LabelKey(sidT, "t3-p")]; ok || st.Labels[store.LabelKey(t1, "t3-p")] != "keep!" {
+		t.Errorf("labels on disk %v, want only the replacement's", st.Labels)
+	}
+
+	// Clearing the label on the replacement clears it: T's older copy
+	// must not show through.
+	u = drive(t, cursorTo(t, u, t1, "t3-p"), key('L'))
+	for range "keep!" {
+		u = drive(t, u, tea.KeyMsg{Type: tea.KeyBackspace})
+	}
+	u = drive(t, u, enter)
+	if got := rowText(u, t1, "t3-p"); strings.Contains(got, "★") {
+		t.Errorf("t3 still renders %q after clearing its label", got)
+	}
+	if got := rowText(w.open(t1), t1, "t3-p"); strings.Contains(got, "★") {
+		t.Errorf("after a reload t3 renders %q, want no label", got)
+	}
+}
