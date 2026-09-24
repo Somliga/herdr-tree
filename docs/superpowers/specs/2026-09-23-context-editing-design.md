@@ -304,7 +304,10 @@ A label names a turn by session and uuid. A replacement keeps its turns'
 uuids, so the tree looks a label up along the line's `replaces` chain: a
 label set on a turn of an earlier version of the line shows on the same turn
 of the newest one. A label on a turn that was squashed or dropped away has no
-row to show on and is not shown. Labels are never rewritten in the store.
+row to show on and is not shown. Setting or clearing a label (`L`) writes it
+under the session it is set on and removes the same turn's label from the
+older versions along the chain, so the label shown is always the one last
+set, and an empty label really clears it.
 
 ### 5.4 Markers
 
