@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"herdr-tree/internal/adapter"
 )
@@ -329,5 +330,32 @@ func TestSummariseReadsTheWholeEndTurn(t *testing.T) {
 	}
 	if grafted != "a3" {
 		t.Fatal("the throwaway session stops before the end turn's reply")
+	}
+}
+
+// A model call that outlives the timeout is abandoned: the error says so,
+// the throwaway session goes, and the source is untouched.
+func TestSummariseTimesOut(t *testing.T) {
+	old := summariseTimeout
+	summariseTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { summariseTimeout = old })
+	projects := t.TempDir()
+	t.Setenv("CLAUDE_PROJECTS_DIR", projects)
+	stubClaude(t, `sleep 3; echo "attempted: x"`)
+	before, _ := os.ReadFile("testdata/simple.jsonl")
+
+	start := time.Now()
+	sum, err := Summarise("testdata/simple.jsonl", "u1", "u3", t.TempDir(), false)
+	if err == nil || err.Error() != "summarise timed out after 100ms" || sum != "" {
+		t.Fatalf("summary %q, err %v", sum, err)
+	}
+	if took := time.Since(start); took > 2*time.Second {
+		t.Errorf("returned after %s: the timeout did not bound the call", took)
+	}
+	if left := sessionFiles(t, projects); len(left) != 0 {
+		t.Fatalf("the throwaway session survived: %v", left)
+	}
+	if after, _ := os.ReadFile("testdata/simple.jsonl"); string(after) != string(before) {
+		t.Fatal("the source transcript changed")
 	}
 }

@@ -13,7 +13,7 @@ import (
 
 // summariseTimeout bounds the model call. Summarising a long range is slow,
 // and the overlay is waiting.
-const summariseTimeout = 5 * time.Minute
+var summariseTimeout = 5 * time.Minute // a var so a test can shorten it
 
 // summariseGraftHook, when set, sees the throwaway transcript before it is
 // resumed. Tests only: it is how a test observes what the model is shown.
@@ -133,6 +133,11 @@ func Summarise(srcPath, fromTurn, toTurn, tmpCWD string, compact bool) (string, 
 	cmd := exec.CommandContext(ctx, "claude", "-p", "--resume", sid, prompt)
 	cmd.Dir = tmpCWD
 	cmd.Stdin = nil
+	// The kill reaches only claude itself. Anything it started still holds
+	// stdout open, and Output would wait on that past the timeout.
+	// ponytail: the orphan is left running; kill its process group if one is
+	// ever seen outliving a timeout.
+	cmd.WaitDelay = time.Second
 	out, err := cmd.Output()
 	if ctx.Err() == context.DeadlineExceeded {
 		return "", fmt.Errorf("summarise timed out after %s", summariseTimeout)
