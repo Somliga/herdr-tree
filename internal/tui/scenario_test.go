@@ -806,6 +806,7 @@ func TestScenarioTwoOverlaysEditTheSameLine(t *testing.T) {
 	u1 = drive(t, selectRange(t, u1, sidT, "t2-p", "t2-r", 2), enter)
 	r1 := w.replacement(sidT)
 	u2 = drive(t, selectRange(t, u2, sidT, "t3-p", "t4-r", 0), enter)
+	// pins BUG 5's current outcome — invert when BUG 5 is fixed
 	if !strings.HasPrefix(u2.status, "squashed "+shortID(sidT)+" → ") {
 		t.Fatalf("second overlay's squash: %q", u2.status)
 	}
@@ -819,15 +820,19 @@ func TestScenarioTwoOverlaysEditTheSameLine(t *testing.T) {
 		}
 	}
 	st, _ := store.Load(w.repo)
+	// pins BUG 5's current outcome — invert when BUG 5 is fixed
 	if r2 == r1 || st.Branches[r1].Replaces != sidT || st.Branches[r2].Replaces != sidT {
 		t.Fatalf("store: T→%s, %s replaces %q, %s replaces %q", shortID(r2),
 			shortID(r1), st.Branches[r1].Replaces, shortID(r2), st.Branches[r2].Replaces)
 	}
+	// pins BUG 5's current outcome — invert when BUG 5 is fixed
 	if got := rowText(w.open(sidT), r1, "t3-p"); got != "" {
 		t.Fatalf("scoped to T, the first overlay's line shows: %q", got)
 	}
 	u := allOf(w.open(sidT))
+	// pins BUG 5's current outcome — invert when BUG 5 is fixed
 	checkLines(t, u, r1, r2)
+	// pins BUG 5's current outcome — invert when BUG 5 is fixed
 	if got := rowText(u, r2, "t2-p"); got == "" {
 		t.Fatalf("the winning line lost t2, which only the other overlay dropped:\n%s", strings.Join(screen(u), "\n"))
 	}

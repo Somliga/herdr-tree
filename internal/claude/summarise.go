@@ -142,6 +142,9 @@ func Summarise(srcPath, fromTurn, toTurn, tmpCWD string, compact bool) (string, 
 	if ctx.Err() == context.DeadlineExceeded {
 		return "", fmt.Errorf("summarise timed out after %s", summariseTimeout)
 	}
+	if errors.Is(err, exec.ErrWaitDelay) {
+		err = nil // claude exited cleanly and its reply is whole; only a child lingered
+	}
 	if err != nil {
 		var ee *exec.ExitError
 		if errors.As(err, &ee) {

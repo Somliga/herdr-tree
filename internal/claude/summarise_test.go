@@ -359,3 +359,18 @@ func TestSummariseTimesOut(t *testing.T) {
 		t.Fatal("the source transcript changed")
 	}
 }
+
+// A summary that arrived is kept when claude exits cleanly but leaves a
+// child holding stdout: the call was paid for.
+func TestSummariseKeepsASummaryAChildOutlives(t *testing.T) {
+	t.Setenv("CLAUDE_PROJECTS_DIR", t.TempDir())
+	stubClaude(t, `echo "the summary"; sleep 3 & exit 0`)
+	start := time.Now()
+	sum, err := Summarise("testdata/simple.jsonl", "u1", "u3", t.TempDir(), false)
+	if err != nil || sum != "the summary" {
+		t.Fatalf("summary %q, err %v", sum, err)
+	}
+	if took := time.Since(start); took > 2*time.Second {
+		t.Errorf("returned after %s, want about the WaitDelay", took)
+	}
+}
