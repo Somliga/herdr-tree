@@ -537,6 +537,21 @@ func (m *Model) Fold() {
 	for p != nil && p.Superseded {
 		p = m.parent[p]
 	}
+	// A lifted graft's m.parent still names the body row it physically
+	// attached to (Build's own Children graph, which m.parent walks, is
+	// unchanged), not the head orderedChildren now renders it under. Step up
+	// to that head, cycle-guarded against a corrupt (hand-edited) store.
+	if p != nil && p.SessionID != n.SessionID {
+		seen := map[*tree.Node]bool{p: true}
+		for p != nil && !p.IsHead {
+			next := m.parent[p]
+			if next == nil || seen[next] {
+				break
+			}
+			seen[next] = true
+			p = next
+		}
+	}
 	if p == nil {
 		return
 	}

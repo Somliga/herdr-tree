@@ -572,6 +572,52 @@ func TestScenarioBranchAtBulldogIndentsAndTheTailDoesNot(t *testing.T) {
 	}
 }
 
+// A4. Round-2 review finding: a lifted graft's m.parent still names the
+// body row it physically attached to (BULLDOG's reply), not the head it now
+// renders under (BULLDOG-p) — orderedChildren lifts it for RENDERING, but
+// Build's own Children graph, which m.parent walks, is unchanged. Fold() on
+// the branch's own first row must still land on BULLDOG-p, folded or not.
+//
+// No typeInto after w.branch: nothing new was written into the branch, so
+// its own kept row (attachPoint's "nothing new" fallback) is the copy of
+// BULLDOG's reply itself — a LEAF, so Fold() always jumps rather than
+// folding it first, in every fold state.
+func TestFoldOnABranchLandsOnItsHead(t *testing.T) {
+	w := newWorld(t)
+	w.trunk(sidT, "APPLE", "BULLDOG", "TRIPPLEDIP")
+	b := w.branch(sidT, sidT, "BULLDOG-p")
+
+	check := func(t *testing.T, u uiModel) {
+		t.Helper()
+		i := -1
+		for j, r := range u.m.Rows() {
+			if r.Node.SessionID == b {
+				i = j
+				break
+			}
+		}
+		if i < 0 {
+			t.Fatalf("the branch's own row is not on screen:\n%s", strings.Join(screen(u), "\n"))
+		}
+		u.m.Cursor = i
+		u.m.Fold()
+		cur := u.m.Rows()[u.m.Cursor]
+		if cur.Node.SessionID != sidT || cur.Node.Node.ID != "BULLDOG-p" {
+			t.Fatalf("Fold() on the branch landed on %s %q, want BULLDOG-p:\n%s",
+				shortID(cur.Node.SessionID), cur.Node.Node.ID, strings.Join(screen(u), "\n"))
+		}
+	}
+
+	t.Run("folded", func(t *testing.T) {
+		check(t, allOf(w.open(b))) // the default state
+	})
+	t.Run("unfolded", func(t *testing.T) {
+		u := allOf(w.open(b))
+		unfold(u)
+		check(t, u)
+	})
+}
+
 // B. squash into… moves a branch's turns into the trunk, then the trunk's
 // into a branch of that branch.
 func TestScenarioSquashIntoAcrossBranches(t *testing.T) {
