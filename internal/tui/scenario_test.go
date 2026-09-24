@@ -362,8 +362,9 @@ func checkNoCopies(t *testing.T, u uiModel) {
 }
 
 // checkHangsUnder asserts child's first row is its first own entry, marked
-// ↳ <child>, drawn right after parent's entry at and indented under it —
-// unless child is on the trunk, which continues the line at its depth.
+// ↳ <child>, drawn right after parent's entry at and indented under it — a
+// branch is always indented under the turn it left (§5.3d), on the trunk or
+// not.
 func checkHangsUnder(t *testing.T, u uiModel, child, first, parent, at string) {
 	t.Helper()
 	unfold(u)
@@ -385,9 +386,6 @@ func checkHangsUnder(t *testing.T, u uiModel, child, first, parent, at string) {
 	// Body rows of the parent's turn may sit between; a graft comes right
 	// after the entry it left, before the next turn of the parent.
 	indented := rows[c].Depth > rows[p].Depth
-	if rows[c].OnTrunk {
-		indented = rows[c].Depth == rows[p].Depth
-	}
 	if c != p+1 || !indented {
 		t.Errorf("%s at row %d depth %d, want right under %s's %s (row %d depth %d):\n%s",
 			shortID(child), c, rows[c].Depth, shortID(parent), at, p, rows[p].Depth, strings.Join(screen(u), "\n"))
@@ -495,6 +493,31 @@ func TestScenarioBranchStartsAfterTheWholeTurn(t *testing.T) {
 	checkLines(t, u, sidT, b)
 	checkHangsUnder(t, u, b, "b1-p", sidT, "t2-r")
 	checkNoCopies(t, u)
+}
+
+// A3. §5.3d: the branch off BULLDOG (t2) is always indented under it, bar
+// and all, and TRIPPLEDIP (t3) — the trunk's own tail once the user is on
+// the branch — stays at the root's depth with no bar.
+func TestScenarioBranchAtBulldogIndentsAndTheTailDoesNot(t *testing.T) {
+	w := newWorld(t)
+	w.trunk(sidT, "APPLE", "BULLDOG", "TRIPPLEDIP")
+
+	b := w.branch(sidT, sidT, "BULLDOG-p")
+	w.typeInto(b, "BRANCH1")
+
+	u := allOf(w.open(b))
+	unfold(u)
+	rows := u.m.Rows()
+	branchRow := rows[rowOf(u, b, "BRANCH1-p")]
+	tailRow := rows[rowOf(u, sidT, "TRIPPLEDIP-p")]
+	bulldogRow := rows[rowOf(u, sidT, "BULLDOG-p")]
+
+	if branchRow.Depth <= bulldogRow.Depth || !branchRow.OnTrunk {
+		t.Fatalf("the branch at BULLDOG must be indented under it with the bar: %+v vs BULLDOG's %+v", branchRow, bulldogRow)
+	}
+	if tailRow.Depth != bulldogRow.Depth || tailRow.OnTrunk {
+		t.Fatalf("TRIPPLEDIP is the abandoned tail: root depth, no bar: %+v", tailRow)
+	}
 }
 
 // B. squash into… moves a branch's turns into the trunk, then the trunk's

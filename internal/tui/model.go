@@ -293,12 +293,13 @@ func New(roots []*tree.Node) *Model {
 }
 
 // orderedChildren returns n's children in render order — this turn's own
-// body first, then anything that diverges here, then whatever continues the
-// line last — plus, for each child, whether it continues the trunk (a graft
-// whose session is in m.OnTrunk when n itself is on the trunk, otherwise the
-// same-session chain child; neither exists as "the trunk" when n is off it,
-// but the same child is still picked out as the line's continuation for
-// ordering purposes).
+// body first, then every branch that left here (the one on the trunk, if
+// any, sorted first among them), then the parent's own same-session
+// continuation last — plus, for each child, whether it carries the bar: the
+// trunk graft if there is one, else the same-session continuation, never
+// both (§5.3d: a branch is always indented, so it no longer takes the
+// continuation's place — only the bar still tells the trunk apart from a
+// branch that happens to sit right beside it).
 //
 // Putting the divergence before the continuation is what makes a branch
 // render immediately under the turn it left rather than after the whole
@@ -308,19 +309,22 @@ func New(roots []*tree.Node) *Model {
 // is decided, shared by both the folded and unfolded loops in Rows, so the
 // rule is never duplicated.
 func (m *Model) orderedChildren(n *tree.Node, nOnTrunk bool) (order []*tree.Node, onTrunkOf map[*tree.Node]bool) {
+	// cont is always n's own chain continuing: the next section head in the
+	// SAME session. A graft that happens to be on the trunk no longer takes
+	// its place — it renders as a branch like any other, just first among
+	// them and marked with the bar.
 	var cont *tree.Node
+	for _, c := range n.Children {
+		if c.IsHead && c.SessionID == n.SessionID {
+			cont = c
+			break
+		}
+	}
+	var trunkGraft *tree.Node
 	if nOnTrunk {
 		for _, c := range n.Children {
 			if c.SessionID != n.SessionID && m.OnTrunk[c.SessionID] {
-				cont = c
-				break
-			}
-		}
-	}
-	if cont == nil {
-		for _, c := range n.Children {
-			if c.IsHead && c.SessionID == n.SessionID {
-				cont = c
+				trunkGraft = c
 				break
 			}
 		}
@@ -330,24 +334,56 @@ func (m *Model) orderedChildren(n *tree.Node, nOnTrunk bool) (order []*tree.Node
 	onTrunkOf = map[*tree.Node]bool{}
 	for _, c := range n.Children {
 		switch {
+		case c == cont:
+			// placed last, below
 		case c.SessionID == n.SessionID && !c.IsHead:
-			// This turn's own body: stays on-trunk exactly when n does,
-			// regardless of which child (if any) continues the line.
+			// This turn's own body: stays on-trunk exactly when n does.
 			body = append(body, c)
 			onTrunkOf[c] = nOnTrunk
-		case c == cont:
-			onTrunkOf[c] = nOnTrunk
+		case c == trunkGraft:
+			onTrunkOf[c] = true
 		default:
 			diverge = append(diverge, c)
 			onTrunkOf[c] = false
 		}
 	}
 	order = append(order, body...)
+	if trunkGraft != nil {
+		order = append(order, trunkGraft)
+	}
 	order = append(order, diverge...)
 	if cont != nil {
+		// The bar goes to the trunk graft when there is one, DIRECT child or
+		// not: Task 20's whole-turn rule almost always grafts on a reply, not
+		// the head, so the trunk graft is usually a grandchild here (n's
+		// body row's own child), not a sibling of cont. Either way it is
+		// still a divergence of n's WHOLE turn, so cont — the turn's own
+		// continuation — loses the bar exactly as if the graft sat right
+		// beside it.
+		onTrunkOf[cont] = nOnTrunk && trunkGraft == nil && !m.bodyDivergesFromTrunk(n)
 		order = append(order, cont)
 	}
 	return order, onTrunkOf
+}
+
+// bodyDivergesFromTrunk reports whether the trunk has already left n's own
+// turn somewhere inside its body — a graft point that lands on a body row
+// (the common case since Task 20's whole-turn rule) is still a divergence of
+// the WHOLE turn, not just of that one row, even though it is n's
+// grandchild rather than n's own child.
+func (m *Model) bodyDivergesFromTrunk(n *tree.Node) bool {
+	for _, c := range n.Children {
+		if c.SessionID != n.SessionID {
+			if m.OnTrunk[c.SessionID] {
+				return true
+			}
+			continue
+		}
+		if !c.IsHead && m.bodyDivergesFromTrunk(c) {
+			return true
+		}
+	}
+	return false
 }
 
 // childDepth is the shared graft/body indent rule, applied identically by
@@ -359,19 +395,16 @@ func (m *Model) orderedChildren(n *tree.Node, nOnTrunk bool) (order []*tree.Node
 // and off the screen entirely. Every mockup in the spec was a four-turn
 // illustration, which hid it completely.
 //
-// A child in the SAME session renders at its parent's depth, unless it is
-// the body of a section (n is a head, c is not). A child starting a
-// DIFFERENT session — which only happens via a graft edge — earns an indent
-// too, UNLESS it continues the trunk: crossing into the session you are
-// actually on is not a branch, it IS the main line, and whatever the parent
-// leaves behind — the abandoned tail after a rewind, say — is the thing
-// that reads as the branch instead.
-func childDepth(n, c *tree.Node, depth int, nOnTrunk, cOnTrunk bool) int {
+// A branch is always indented one level under the turn it left (§5.3d),
+// whether or not it is on the trunk: crossing into a different session is
+// what makes something a branch, full stop, and the bar (not depth) is what
+// still marks your own path through it. A child in the SAME session renders
+// at its parent's depth, unless it is the body of a section (n is a head, c
+// is not).
+func childDepth(n, c *tree.Node, depth int) int {
 	switch {
-	case nOnTrunk && !cOnTrunk:
-		return depth + 1 // the divergence: a branch, or the abandoned tail
-	case !nOnTrunk && c.SessionID != n.SessionID:
-		return depth + 1 // v1 graft indent, off-trunk throughout
+	case c.SessionID != n.SessionID:
+		return depth + 1 // a branch, wherever it sits relative to the trunk
 	case n.IsHead && !c.IsHead && !n.Superseded:
 		// This section's body — but only when n itself gets a row to indent
 		// under. n.Superseded means n is a branch's copy of a turn its
@@ -425,13 +458,13 @@ func (m *Model) Rows() []Row {
 				if c.SessionID == n.SessionID && !c.IsHead {
 					continue // folding hides this node's own body
 				}
-				walk(c, childDepth(n, c, depth, nOnTrunk, onTrunkOf[c]), onTrunkOf[c])
+				walk(c, childDepth(n, c, depth), onTrunkOf[c])
 			}
 			return
 		}
 		// A hidden (filtered) node still does not hide its children.
 		for _, c := range order {
-			walk(c, childDepth(n, c, depth, nOnTrunk, onTrunkOf[c]), onTrunkOf[c])
+			walk(c, childDepth(n, c, depth), onTrunkOf[c])
 		}
 	}
 	for _, r := range m.Roots {

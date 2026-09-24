@@ -671,7 +671,13 @@ func TestGraftedChildIndentsOneLevelInAScopedView(t *testing.T) {
 	}
 }
 
-func TestTrunkRendersAtDepthZeroEvenWhenGrafted(t *testing.T) {
+// TestATrunkGraftIsIndentedButKeepsTheBar is §5.3d: a branch is always
+// indented under the turn it left, even the one the user is actually on —
+// indentation means "branched here", the bar means "your path", and the two
+// are no longer the same thing. This replaces the old rule this test used to
+// assert (the trunk rendering at depth 0 through a graft); the spec retired
+// that rule outright.
+func TestATrunkGraftIsIndentedButKeepsTheBar(t *testing.T) {
 	// root ── (branch point) ── grafted, and the user is in the grafted one
 	root := &tree.Node{Node: adapter.Node{ID: "r1"}, SessionID: "root", IsSessionRoot: true, IsHead: true}
 	r2 := &tree.Node{Node: adapter.Node{ID: "r2"}, SessionID: "root", IsHead: true}
@@ -684,8 +690,15 @@ func TestTrunkRendersAtDepthZeroEvenWhenGrafted(t *testing.T) {
 	m := New([]*tree.Node{root})
 	m.SetTrunk(map[string]bool{"graft": true, "root": true})
 	for _, r := range m.Rows() {
-		if r.Node.SessionID == "graft" && r.Depth != 0 {
-			t.Fatalf("the trunk must render at depth 0; %s is at %d", r.Node.Node.ID, r.Depth)
+		switch r.Node.SessionID {
+		case "root":
+			if r.Depth != 0 || !r.OnTrunk {
+				t.Fatalf("the root session stays at depth 0 with the bar; %s is at %d onTrunk=%v", r.Node.Node.ID, r.Depth, r.OnTrunk)
+			}
+		case "graft":
+			if r.Depth != 1 || !r.OnTrunk {
+				t.Fatalf("the trunk graft is indented but keeps the bar; %s is at %d onTrunk=%v", r.Node.Node.ID, r.Depth, r.OnTrunk)
+			}
 		}
 	}
 }
@@ -726,7 +739,13 @@ func TestNoTrunkFallsBackToV1(t *testing.T) {
 	}
 }
 
-func TestAbandonedTailRendersAsABranchAfterARewind(t *testing.T) {
+// TestAbandonedTailRendersAtTheRootDepthWithNoBar is §5.3d: a branch (here,
+// the rewind into "new") is always indented, whoever is on it, so it is the
+// abandoned same-session tail that now stays level with the trunk prefix —
+// only the missing bar tells it apart. This replaces this test's old
+// assertion (the tail indented, the rewound branch at depth 0); the spec
+// retired that rule outright.
+func TestAbandonedTailRendersAtTheRootDepthWithNoBar(t *testing.T) {
 	// s1 ── s2 ── s3   with the user rewound at s2 into session "new"
 	s1 := &tree.Node{Node: adapter.Node{ID: "s1"}, SessionID: "old", IsSessionRoot: true, IsHead: true}
 	s2 := &tree.Node{Node: adapter.Node{ID: "s2"}, SessionID: "old", IsHead: true}
@@ -743,14 +762,17 @@ func TestAbandonedTailRendersAsABranchAfterARewind(t *testing.T) {
 		at[r.Node.Node.ID] = r
 		order = append(order, r.Node.Node.ID)
 	}
-	if at["s3"].Depth != 1 {
-		t.Fatalf("the abandoned tail is a branch; s3 at depth %d want 1", at["s3"].Depth)
+	if at["s3"].Depth != 0 {
+		t.Fatalf("the abandoned tail stays at the root's depth; s3 at depth %d want 0", at["s3"].Depth)
 	}
 	if at["s3"].OnTrunk {
 		t.Fatal("the abandoned tail is not on the trunk")
 	}
-	if at["n1"].Depth != 0 || !at["n1"].OnTrunk {
-		t.Fatalf("the rewound session is the main line; n1 at %d onTrunk=%v", at["n1"].Depth, at["n1"].OnTrunk)
+	if at["n1"].Depth != 1 || !at["n1"].OnTrunk {
+		t.Fatalf("the rewound session is the main line, indented like any branch; n1 at %d onTrunk=%v", at["n1"].Depth, at["n1"].OnTrunk)
+	}
+	if order[2] != "n1" || order[3] != "s3" {
+		t.Fatalf("the branch renders before the tail it left behind: %v", order)
 	}
 	if at["s1"].Depth != 0 || at["s2"].Depth != 0 {
 		t.Fatalf("the trunk prefix stays at depth 0: %v", order)
@@ -783,12 +805,14 @@ func TestABranchRendersAtItsDivergenceNotAtTheBottom(t *testing.T) {
 	}
 }
 
-// TestOnTrunkGraftFromANonHeadBodyTurnDoesNotIndent closes a gap found in
+// TestOnTrunkGraftFromANonHeadBodyTurnStillIndents closes a gap found in
 // review: every other fixture in this file sets IsHead, so New() auto-folds
-// it and every walk in this file goes through the FOLDED branch of Rows.
-// A body turn (IsHead: false) is never auto-folded, so its child is the only
-// way to reach the UNFOLDED branch's trunk-continuation exception.
-func TestOnTrunkGraftFromANonHeadBodyTurnDoesNotIndent(t *testing.T) {
+// it and every walk in this file goes through the FOLDED branch of Rows. A
+// body turn (IsHead: false) is never auto-folded, so its child is the only
+// way to reach the UNFOLDED branch of Rows in this file. §5.3d retired the
+// trunk-continuation exception this test used to name; a branch off a body
+// turn indents exactly like one off a head.
+func TestOnTrunkGraftFromANonHeadBodyTurnStillIndents(t *testing.T) {
 	body := &tree.Node{Node: adapter.Node{ID: "b1"}, SessionID: "main"}
 	cont := &tree.Node{Node: adapter.Node{ID: "c1"}, SessionID: "new", IsSessionRoot: true, IsHead: true, Grafted: true}
 	body.Children = append(body.Children, cont)
@@ -797,8 +821,8 @@ func TestOnTrunkGraftFromANonHeadBodyTurnDoesNotIndent(t *testing.T) {
 	m.SetTrunk(map[string]bool{"main": true, "new": true})
 
 	for _, r := range m.Rows() {
-		if r.Node.SessionID == "new" && r.Depth != 0 {
-			t.Fatalf("a graft that continues the trunk must not indent, even off a body turn; got depth %d", r.Depth)
+		if r.Node.SessionID == "new" && (r.Depth != 1 || !r.OnTrunk) {
+			t.Fatalf("a branch is always indented, even off a body turn, and this one keeps the bar; got depth %d onTrunk=%v", r.Depth, r.OnTrunk)
 		}
 	}
 }
