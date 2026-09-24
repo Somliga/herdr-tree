@@ -298,6 +298,14 @@ point, so it stays visible and `⏎` opens it. Labels on those hidden copies do
 not show; labels on the parent's turns are unaffected. A line that replaced
 another (§5.2) is not attached under anything and is unaffected.
 
+### 5.3c Labels follow their turn
+
+A label names a turn by session and uuid. A replacement keeps its turns'
+uuids, so the tree looks a label up along the line's `replaces` chain: a
+label set on a turn of an earlier version of the line shows on the same turn
+of the newest one. A label on a turn that was squashed or dropped away has no
+row to show on and is not shown. Labels are never rewritten in the store.
+
 ### 5.4 Markers
 
 - **Drop**: the row after the drop shows `✂ <n> turns dropped` in the muted
@@ -305,6 +313,10 @@ another (§5.2) is not attached under anything and is unaffected.
   transcript.
 - **Squash / merge**: the seeded entry renders blue or orange through its
   `⤶` prefix, per v2 §6b. Unchanged.
+
+A line edited more than once keeps every earlier drop's marker: the tree
+collects `cut` records along the `replaces` chain, each on its own anchor turn
+(or the last row) in the newest line.
 
 ## 6. Live handover
 
