@@ -309,6 +309,20 @@ under the session it is set on and removes the same turn's label from the
 older versions along the chain, so the label shown is always the one last
 set, and an empty label really clears it.
 
+### 5.3d The family, and your path through it
+
+The default scope is the **family** of the session you are in: the top-most
+root line whose tree contains it (after `Resolve`, §6.3), with every branch
+anywhere in that tree. `a` still shows all sessions.
+
+Your path through the family — the trunk the tree already computes: your
+session and each session it was grafted from, up to each branch point — is
+marked by a cyan `▎` in the left margin of every row on it. The parent's turns
+after the point you branched from, and sibling branches, have no bar. The bar
+is drawn as its own segment, like the `✂` note, so no row's colour changes;
+this overrides the timeline spec's §6b "no trunk style" with a margin mark
+rather than a row colour. With no current session there is no bar.
+
 ### 5.4 Markers
 
 - **Drop**: the row after the drop shows `✂ <n> turns dropped` in the muted
