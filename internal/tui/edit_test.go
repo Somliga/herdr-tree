@@ -636,6 +636,19 @@ func cutAndReload(t *testing.T, current string) uiModel {
 	return next.(uiModel)
 }
 
+// A reload that fails after the edit wrote must say both: what was written,
+// and that the tree on screen is the old one.
+func TestAFailedReloadSaysTheTreeWasNotRefreshed(t *testing.T) {
+	fa := &fakeAdapter{span: adapter.Span{First: 2, Last: 3}, discoverErr: errors.New("disk on fire")}
+	u, _ := press(t, rangeUI(t, fa, &herdrLog{}), enter, down, down, enter)
+	u, cmd := press(t, u, enter)
+	next, _ := u.Update(cmd())
+	want := "dropped 2 turns from s → spliced- — ⏎ on it to continue there (tree not refreshed: disk on fire)"
+	if got := next.(uiModel).status; got != want {
+		t.Fatalf("status %q, want %q", got, want)
+	}
+}
+
 func TestAReloadPutsTheCursorOnTheNewLinesTip(t *testing.T) {
 	u := cutAndReload(t, "")
 	if n := u.m.Selected(); n == nil || n.SessionID != "spliced-sid" || !n.IsSessionLeaf {

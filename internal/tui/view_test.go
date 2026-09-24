@@ -89,11 +89,14 @@ type fakeAdapter struct {
 	splices     int
 	writes      []string // "summarise <src>", "splice <src>" and "graft <src>", in order, failed ones too
 
-	sessions []adapter.Session // what Discover finds on a reload
+	sessions    []adapter.Session // what Discover finds on a reload
+	discoverErr error
 }
 
 func (f *fakeAdapter) Name() string                               { return "fake" }
-func (f *fakeAdapter) Discover(string) ([]adapter.Session, error) { return f.sessions, nil }
+func (f *fakeAdapter) Discover(string) ([]adapter.Session, error) {
+	return f.sessions, f.discoverErr
+}
 func (f *fakeAdapter) Current(adapter.Pane) (string, error)       { return "", nil }
 func (f *fakeAdapter) Preview(adapter.Session, string) (int, int, int64, error) {
 	return 1, 2, 3, nil

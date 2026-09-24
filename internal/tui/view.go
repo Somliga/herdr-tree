@@ -471,6 +471,8 @@ func (u uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				u.m.RangeEnd = nil
 				u.rebuild()
 				u.m.RevealTip(msg.tip)
+			} else {
+				u.status += " (tree not refreshed: " + err.Error() + ")"
 			}
 		}
 		return u, nil
