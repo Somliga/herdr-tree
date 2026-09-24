@@ -332,6 +332,12 @@ is drawn as its own segment, like the `✂` note, so no row's colour changes;
 this overrides the timeline spec's §6b "no trunk style" with a margin mark
 rather than a row colour. With no current session there is no bar.
 
+**A branch is always indented** one level under the turn it came from,
+whether or not you are on it; the parent's own continuation after that turn
+stays at the parent's depth and follows the branches under it. Indentation
+means "branched here"; the bar means "your path". This replaces v2's rule that
+the line you are on stays level while the left-behind tail is indented.
+
 ### 5.4 Markers
 
 - **Drop**: the row after the drop shows `✂ <n> turns dropped` in the muted
