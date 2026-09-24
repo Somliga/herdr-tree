@@ -131,6 +131,9 @@ func Classify(e Entry, hasOrigin bool) (adapter.Kind, bool) {
 		if e.HasToolUseResult() || e.IsToolResult() {
 			return 0, false // the call is shown, not the output
 		}
+		if e.IsCompactSummary() {
+			return 0, false // a native /compact's summary: preamble, on either path
+		}
 		t := strings.TrimSpace(e.Text())
 		if strings.HasPrefix(t, SummaryPrefix) {
 			return adapter.KindSummaryImport, true

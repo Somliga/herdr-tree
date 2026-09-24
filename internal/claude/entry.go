@@ -39,6 +39,13 @@ func (e Entry) IsSidechain() bool {
 	return b
 }
 
+// IsCompactSummary marks the summary a native /compact writes after its
+// boundary. It is user-typed on disk but no one typed it.
+func (e Entry) IsCompactSummary() bool {
+	b, _ := e.Raw["isCompactSummary"].(bool)
+	return b
+}
+
 func (e Entry) HasToolUseResult() bool {
 	_, ok := e.Raw["toolUseResult"]
 	return ok

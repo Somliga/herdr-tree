@@ -98,3 +98,30 @@ func TestSpanRefusesARewoundStretch(t *testing.T) {
 		t.Fatalf("err = %v, want ErrNotOnLine", err)
 	}
 }
+
+// A native /compact summary was written by Claude Code, not typed, with or
+// without origin stamped: it is preamble after the boundary (§3.4), never a
+// turn and never a `user:` node.
+func TestANativeCompactSummaryIsPreambleWithOrWithoutOrigin(t *testing.T) {
+	for _, path := range []string{"testdata/compacted.jsonl", "testdata/compacted-preorigin.jsonl"} {
+		es, _, err := ParseFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, n := range Entries(es) {
+			if n.ID == "cs" {
+				t.Fatalf("%s: the compact summary is a %v node", path, n.Kind)
+			}
+		}
+		l := mustLine(t, path)
+		want := map[string]int{"cb": 0, "cs": 0, "u3": 1, "a3": 1, "u4": 2, "a4": 2}
+		for u, tn := range want {
+			if got, ok := l.turn[u]; !ok || got != tn {
+				t.Fatalf("%s: %s in turn %d (kept %v), want %d", path, u, got, ok, tn)
+			}
+		}
+		if l.last != 2 {
+			t.Fatalf("%s: last turn %d, want 2", path, l.last)
+		}
+	}
+}
