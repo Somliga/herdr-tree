@@ -42,23 +42,44 @@ type Node struct {
 
 // attachPoint finds where a grafted child's own line begins. A grafted
 // session carries copies of every turn up to its graft point under the same
-// ids as the line it left (§5.3b); the first node whose id is NOT also in the
-// parent line is where the branch actually diverges, and it becomes the row
-// that carries "↳ <session>" and the branch's session-root marker. Every
-// node up to it is marked Superseded, so it renders no row of its own but its
-// children (the rest of the child's own chain) are still walked normally —
-// the same treatment Rows() already gives a filtered-out node.
+// ids as the line it left (§5.3b), so every node up to and including the one
+// whose id is graftNode is a copy, and the node after it is where the branch
+// actually diverges: it becomes the row that carries "↳ <session>" and the
+// branch's session-root marker. The copies are marked Superseded, so they
+// render no row of their own but their children (the rest of the child's own
+// chain) are still walked normally — the same treatment Rows() already gives
+// a filtered-out node. Counting to the graft node rather than matching ids
+// against the parent keeps working after the parent line was edited and no
+// longer holds some of the turns the branch copied.
+//
+// If graftNode is not in the chain, the copies are found by id instead: the
+// first node whose id is NOT also in the parent line is where it diverges.
 //
 // If nothing in the chain is new, the last node (the copy of the graft point
 // itself) is kept as the one visible row, so the branch stays reachable.
 // Returns nil only when the chain is empty (a broken session).
-func attachPoint(chain []*Node, parentNodes map[string]*Node) *Node {
-	for _, n := range chain {
-		if _, copied := parentNodes[n.Node.ID]; !copied {
-			return n
+func attachPoint(chain []*Node, graftNode string, parentNodes map[string]*Node) *Node {
+	copies := 0
+	for i, n := range chain {
+		if n.Node.ID == graftNode {
+			copies = i + 1
+			break
 		}
+	}
+	if copies == 0 {
+		for _, n := range chain {
+			if _, copied := parentNodes[n.Node.ID]; !copied {
+				break
+			}
+			copies++
+		}
+	}
+	for _, n := range chain[:copies] {
 		n.Superseded = true
 		n.IsSessionRoot = false
+	}
+	if copies < len(chain) {
+		return chain[copies]
 	}
 	if len(chain) == 0 {
 		return nil
@@ -66,6 +87,21 @@ func attachPoint(chain []*Node, parentNodes map[string]*Node) *Node {
 	last := chain[len(chain)-1]
 	last.Superseded = false
 	return last
+}
+
+// label finds a turn's label on this line or, failing that, on the newest
+// earlier version of it along the replaces chain that has one: a replacement
+// keeps its turns' uuids, so a label follows its turn through every edit
+// (§5.3c).
+func label(s *store.Store, sid, turn string) string {
+	seen := map[string]bool{}
+	for id := sid; id != "" && !seen[id]; id = s.Branches[id].Replaces {
+		seen[id] = true
+		if l, ok := s.Labels[store.LabelKey(id, turn)]; ok {
+			return l
+		}
+	}
+	return ""
 }
 
 // Build turns sessions plus graft edges into roots. A session is a chain;
@@ -112,7 +148,7 @@ func Build(sessions []adapter.Session, s *store.Store) []*Node {
 				IsSessionLeaf: i == len(sess.Nodes)-1,
 				Broken:        sess.Broken,
 			}
-			n.Label = s.Labels[store.LabelKey(sess.ID, t.ID)]
+			n.Label = label(s, sess.ID, t.ID)
 			nodeIndex[sess.ID][t.ID] = n
 			order[sess.ID] = append(order[sess.ID], n)
 
@@ -190,7 +226,7 @@ func Build(sessions []adapter.Session, s *store.Store) []*Node {
 			child.FromRemoved = resolved != from
 			continue
 		}
-		start := attachPoint(order[childSID], parentNodes)
+		start := attachPoint(order[childSID], br.GraftedFrom.Node, parentNodes)
 		if start == nil {
 			start = child
 		}
@@ -200,14 +236,26 @@ func Build(sessions []adapter.Session, s *store.Store) []*Node {
 		attached[childSID] = true
 	}
 
-	for id, br := range s.Branches {
-		if br.Cut == nil || !present[id] || hidden[id] {
+	// A line edited more than once keeps every earlier drop's marker
+	// (§5.4): the cuts along its replaces chain all land in the newest line,
+	// on their own anchor turn or, when that is gone too, on its last row.
+	// Two drops on one anchor add up.
+	for _, sess := range sessions {
+		if hidden[sess.ID] {
 			continue
 		}
-		if n := nodeIndex[id][br.Cut.At]; n != nil {
-			n.CutHere = br.Cut.Turns
-		} else if n := leafOf[id]; n != nil {
-			n.CutAfter = br.Cut.Turns
+		seen := map[string]bool{}
+		for id := sess.ID; id != "" && !seen[id]; id = s.Branches[id].Replaces {
+			seen[id] = true
+			cut := s.Branches[id].Cut
+			if cut == nil {
+				continue
+			}
+			if n := nodeIndex[sess.ID][cut.At]; n != nil {
+				n.CutHere += cut.Turns
+			} else if n := leafOf[sess.ID]; n != nil {
+				n.CutAfter += cut.Turns
+			}
 		}
 	}
 

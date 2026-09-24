@@ -491,6 +491,38 @@ func (m *Model) Fold() {
 	}
 }
 
+// RevealTip puts the cursor on session sid's last turn, first unfolding the
+// section that hides it (a line's tip is usually a reply, in a folded body).
+// Every other section keeps its fold.
+func (m *Model) RevealTip(sid string) {
+	var tip *tree.Node
+	for n := range m.parent {
+		if n.SessionID == sid && n.IsSessionLeaf {
+			tip = n
+		}
+	}
+	for _, r := range m.Roots {
+		if r.SessionID == sid && r.IsSessionLeaf {
+			tip = r
+		}
+	}
+	if tip == nil {
+		return
+	}
+	// Rows() lets a folded node hide only its own session's body entries.
+	for c, p := tip, m.parent[tip]; p != nil; c, p = p, m.parent[p] {
+		if c.SessionID == p.SessionID && !c.IsHead {
+			delete(m.Folded, p)
+		}
+	}
+	for i, r := range m.Rows() {
+		if r.Node == tip {
+			m.Cursor = i
+			return
+		}
+	}
+}
+
 // Unfold expands the selected node.
 func (m *Model) Unfold() {
 	if n := m.Selected(); n != nil {

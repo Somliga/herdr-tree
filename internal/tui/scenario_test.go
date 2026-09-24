@@ -599,7 +599,6 @@ func TestScenarioAChainOfReplacements(t *testing.T) {
 	}
 	checkLines(t, allOf(u), t1, b, d)
 	t.Run("after squash", func(t *testing.T) {
-		skipIf(t, bug1)
 		step(t, u, t1)
 	})
 
@@ -612,7 +611,6 @@ func TestScenarioAChainOfReplacements(t *testing.T) {
 	}
 	checkLines(t, allOf(u), t2, b, d)
 	t.Run("after drop", func(t *testing.T) {
-		skipIf(t, bug1)
 		step(t, u, t2)
 	})
 
@@ -624,14 +622,12 @@ func TestScenarioAChainOfReplacements(t *testing.T) {
 		t.Errorf("%d summary calls, want 2", w.summaries())
 	}
 	t.Run("drop marker survives a later edit", func(t *testing.T) {
-		skipIf(t, bug2)
 		if got := rowText(u, t3, "t4-p"); !strings.Contains(got, "✂ 1 turns dropped before this") {
 			t.Errorf("row after the earlier drop %q, want the ✂ marker still there", got)
 		}
 	})
 	checkLines(t, allOf(u), t3, b, d)
 	t.Run("after second squash", func(t *testing.T) {
-		skipIf(t, bug1)
 		step(t, u, t3)
 	})
 
@@ -682,7 +678,6 @@ func TestScenarioHandoverAfterSeveralEdits(t *testing.T) {
 			}
 
 			t.Run("the cursor lands on the new tip", func(t *testing.T) {
-				skipIf(t, bug4)
 				if n := u.m.Selected(); n == nil || n.SessionID != t2 || !n.IsSessionLeaf {
 					t.Errorf("cursor on %s's %s after the edit, want %s's tip", shortID(n.SessionID), n.Node.ID, shortID(t2))
 				}
@@ -752,25 +747,8 @@ func TestScenarioTwoOverlays(t *testing.T) {
 		t.Fatalf("store after both saves: T %+v, labels %v", st.Branches[tb], st.Labels)
 	}
 	t.Run("the label shows on the replacement", func(t *testing.T) {
-		skipIf(t, bug3)
 		if got := rowText(u, t1, "t4-p"); !strings.Contains(got, "★ keep") {
 			t.Errorf("t4 in T's replacement renders %q, want the label", got)
 		}
 	})
-}
-
-// Bugs found by these scenarios, kept as skipped tests until fixed. See
-// .superpowers/sdd/2026-09-23-context-editing/task-16-report.md.
-const (
-	bug1 = "BUG 1: a branch off a line whose earlier turns were edited renders its copies of the parent's turns again"
-	bug2 = "BUG 2: a drop's ✂ marker disappears when the line is edited again"
-	bug3 = "BUG 3 (spec gap): a label on a turn does not follow the turn into the line that replaced it"
-	bug4 = "BUG 4: after an edit the cursor does not land on the new line's tip when the tip is a reply in a folded section"
-)
-
-func skipIf(t *testing.T, bug string) {
-	t.Helper()
-	if bug != "" {
-		t.Skip(bug + " — see task-16-report.md")
-	}
 }

@@ -499,6 +499,43 @@ func TestABranchDedupesAgainstAReplacementLine(t *testing.T) {
 	}
 }
 
+// A branch's copies run up to its graft point even when the line it hangs
+// from no longer has the earliest of them: squashing the parent's first turn
+// must not bring the branch's copy of it (and everything after) back.
+func TestABranchStaysDedupedAfterItsParentsEarlierTurnsAreEdited(t *testing.T) {
+	st := &store.Store{Branches: map[string]store.Branch{
+		"branch": {GraftedFrom: store.From{SessionID: "old", Node: "t2"}},
+	}}
+	st.Replace("old", "new", store.Branch{Kind: store.KindCompacted})
+	roots := Build([]adapter.Session{
+		sess("new", "seed", "t2", "t3"),
+		sess("old", "t1", "t2", "t3"),
+		sess("branch", "t1", "t2", "b1"),
+	}, st)
+
+	byID := map[string]*Node{}
+	var walk func(n *Node)
+	walk = func(n *Node) {
+		if n.SessionID == "branch" {
+			byID[n.Node.ID] = n
+		}
+		for _, c := range n.Children {
+			walk(c)
+		}
+	}
+	for _, r := range roots {
+		walk(r)
+	}
+	for _, id := range []string{"t1", "t2"} {
+		if n := byID[id]; n == nil || !n.Superseded || n.IsSessionRoot {
+			t.Fatalf("branch's copy of %s must be Superseded, got %+v", id, n)
+		}
+	}
+	if b1 := byID["b1"]; b1 == nil || b1.Superseded || !b1.Grafted || !b1.IsSessionRoot {
+		t.Fatalf("b1 must be the branch's rendered start: %+v", b1)
+	}
+}
+
 func TestTheCutMarkerSitsWhereTheCutWas(t *testing.T) {
 	st := &store.Store{Branches: map[string]store.Branch{}}
 	st.Replace("old", "new", store.Branch{Kind: store.KindCut, Cut: &store.Cut{Turns: 2, At: "t4"}})
@@ -522,5 +559,69 @@ func TestTheCutMarkerSitsWhereTheCutWas(t *testing.T) {
 	}
 	if here != 2 || after != 3 {
 		t.Fatalf("CutHere %d on t4, CutAfter %d on the leaf; want 2 and 3", here, after)
+	}
+}
+
+// §5.4: a line edited more than once keeps every earlier drop's marker, each
+// on its own anchor in the newest line; two drops on one anchor add up, and
+// a drop whose anchor is gone lands on the last row.
+func TestCutMarkersFollowTheReplacesChain(t *testing.T) {
+	st := &store.Store{Branches: map[string]store.Branch{}}
+	st.Replace("v0", "v1", store.Branch{Kind: store.KindCut, Cut: &store.Cut{Turns: 1, At: "t4"}})
+	st.Replace("v1", "v2", store.Branch{Kind: store.KindCut, Cut: &store.Cut{Turns: 2, At: "t4"}})
+	st.Replace("v2", "v3", store.Branch{Kind: store.KindCompacted})
+	st.Replace("v3", "v4", store.Branch{Kind: store.KindCut, Cut: &store.Cut{Turns: 3, At: "gone"}})
+	roots := Build([]adapter.Session{
+		sess("v4", "t1", "t4", "t9"), sess("v3", "t1", "t4", "t8", "t9"),
+		sess("v2", "t1", "t4", "t7"), sess("v1", "t1", "t2", "t4"), sess("v0", "t1", "t2", "t3", "t4"),
+	}, st)
+	var here, after int
+	var walk func(n *Node)
+	walk = func(n *Node) {
+		if n.SessionID == "v4" && n.Node.ID == "t4" {
+			here = n.CutHere
+		}
+		if n.SessionID == "v4" && n.IsSessionLeaf {
+			after = n.CutAfter
+		}
+		for _, c := range n.Children {
+			walk(c)
+		}
+	}
+	for _, r := range roots {
+		walk(r)
+	}
+	if here != 3 || after != 3 {
+		t.Fatalf("CutHere %d on t4, CutAfter %d on the leaf; want 3 and 3", here, after)
+	}
+}
+
+// §5.3c: a label set on an earlier version of a line shows on the same turn
+// of the newest one; a label set on the newer version wins.
+func TestALabelFollowsItsTurnAlongTheReplacesChain(t *testing.T) {
+	st := &store.Store{Branches: map[string]store.Branch{}}
+	st.Replace("v0", "v1", store.Branch{Kind: store.KindCompacted})
+	st.Replace("v1", "v2", store.Branch{Kind: store.KindCut})
+	st.SetLabel("v0", "t3", "old")
+	st.SetLabel("v0", "t4", "older")
+	st.SetLabel("v1", "t4", "newer")
+	roots := Build([]adapter.Session{
+		sess("v2", "t1", "t3", "t4"), sess("v1", "seed", "t2", "t3", "t4"), sess("v0", "t1", "t2", "t3", "t4"),
+	}, st)
+	got := map[string]string{}
+	var walk func(n *Node)
+	walk = func(n *Node) {
+		if n.SessionID == "v2" {
+			got[n.Node.ID] = n.Label
+		}
+		for _, c := range n.Children {
+			walk(c)
+		}
+	}
+	for _, r := range roots {
+		walk(r)
+	}
+	if got["t3"] != "old" || got["t4"] != "newer" || got["t1"] != "" {
+		t.Fatalf("labels on the newest line %v, want t3 old, t4 newer, t1 none", got)
 	}
 }

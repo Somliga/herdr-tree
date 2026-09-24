@@ -917,3 +917,20 @@ func TestRangeMarksTheSameRowsWithTheCursorOnEitherSide(t *testing.T) {
 		t.Fatal("a three-row span collapsed to one node")
 	}
 }
+
+// §4 step 5: after an edit the cursor lands on the new line's tip. A real
+// tip is a reply, the body of a folded section, so it has no row until that
+// section is unfolded — and only that section.
+func TestRevealTipUnfoldsOnlyTheTipsSection(t *testing.T) {
+	s := mkTypedSess("s",
+		turn("p1", adapter.KindHuman), turn("r1", adapter.KindAssistant),
+		turn("p2", adapter.KindHuman), turn("r2", adapter.KindAssistant))
+	m := New(tree.Build([]adapter.Session{s}, &store.Store{Branches: map[string]store.Branch{}}))
+	m.RevealTip("s")
+	if n := m.Selected(); n == nil || n.Node.ID != "r2" {
+		t.Fatalf("cursor on %+v, want the tip r2", n)
+	}
+	if got := strings.Join(ids(m.Rows()), " "); got != "p1 p2 r2" {
+		t.Fatalf("rows %q, want p1 still folded and p2's section open", got)
+	}
+}

@@ -470,12 +470,7 @@ func (u uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				u.roots = tree.Build(sessions, u.st)
 				u.m.RangeEnd = nil
 				u.rebuild()
-				for i, r := range u.m.Rows() {
-					if r.Node.SessionID == msg.tip && r.Node.IsSessionLeaf {
-						u.m.Cursor = i
-						break
-					}
-				}
+				u.m.RevealTip(msg.tip)
 			}
 		}
 		return u, nil
