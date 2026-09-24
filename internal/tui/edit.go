@@ -420,13 +420,21 @@ func (u uiModel) placeChosen(idx int) (tea.Model, tea.Cmd) {
 	u.pickAt = nil
 	src := adapter.Session{ID: at.SessionID, CWD: at.SessionCWD, Path: at.SessionPath}
 	if idx == 1 {
+		// branch here (§2.5b): graft after at's whole turn, not at's own
+		// entry. When at is already the turn's last entry (the common case
+		// for a live tip), Widen is a no-op.
+		sp, err := u.a.Widen(src, at.Node.ID, at.Node.ID)
+		if err != nil {
+			u.status = "cannot branch here: " + err.Error()
+			return u, nil
+		}
 		land := func(sum store.Summary) tea.Cmd {
-			return foldBackCmd(u.a, u.st, at, u.dstCWD(at), sum, u.agentFor(at), u.send)
+			return foldBackCmd(u.a, u.st, at, sp.End, u.dstCWD(at), sum, u.agentFor(at), u.send)
 		}
 		if u.folding != nil {
 			return u.confirmMove(at, "a new line branches at "+shortID(at.SessionID)+", carrying the summary", land)
 		}
-		turns, entries, size, err := u.a.Preview(src, at.Node.ID)
+		turns, entries, size, err := u.a.Preview(src, sp.End)
 		if err != nil {
 			u.status = "cannot branch here: " + err.Error()
 			return u, nil
@@ -463,8 +471,9 @@ func (u uiModel) placeChosen(idx int) (tea.Model, tea.Cmd) {
 // In target mode each of those landings is confirmed with the cost (§2.7).
 func (u uiModel) foldAt(at *tree.Node, sum store.Summary) (tea.Model, tea.Cmd) {
 	if agent := u.agentFor(at); agent != "" && at.IsSessionLeaf && u.send != nil {
+		// The live tip: foldBackCmd's send path ignores graftID entirely.
 		land := func(sum store.Summary) tea.Cmd {
-			return foldBackCmd(u.a, u.st, at, u.dstCWD(at), sum, agent, u.send)
+			return foldBackCmd(u.a, u.st, at, at.Node.ID, u.dstCWD(at), sum, agent, u.send)
 		}
 		if u.folding != nil {
 			return u.confirmMove(at, "the summary is sent to "+agent+" as your next message", land)

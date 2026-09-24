@@ -331,17 +331,23 @@ func resumeCmd(a adapter.Adapter, n *tree.Node, dst string) tea.Cmd {
 	}
 }
 
-func branchCmd(a adapter.Adapter, st *store.Store, n *tree.Node, dst string) tea.Cmd {
+// branchCmd grafts at graftID — the whole turn n belongs to, not n's own
+// entry (§2.5b): n may be a prompt row with a reply still to come, and
+// grafting at the prompt would leave it unanswered for the resumed agent to
+// answer again. Callers widen n's turn first and pass its last entry.
+func branchCmd(a adapter.Adapter, st *store.Store, n *tree.Node, graftID, dst string) tea.Cmd {
 	return func() tea.Msg {
 		src := adapter.Session{ID: n.SessionID, CWD: n.SessionCWD, Path: n.SessionPath}
-		sid, err := a.Branch(src, n.Node.ID, dst)
+		sid, err := a.Branch(src, graftID, dst)
 		if err != nil {
 			return actionDoneMsg{status: "branch failed: " + err.Error()}
 		}
 		// Record the edge before resuming: the transcript now exists, so the
-		// branch must survive even if opening it fails.
+		// branch must survive even if opening it fails. graftID is stored,
+		// not n.Node.ID: it must be the id the branch file actually copied up
+		// to, so tree.Build's attachPoint counts the right number of copies.
 		st.Add(sid, store.Branch{
-			GraftedFrom: store.From{SessionID: n.SessionID, Node: n.Node.ID},
+			GraftedFrom: store.From{SessionID: n.SessionID, Node: graftID},
 			Title:       n.Node.Title,
 			CreatedAt:   time.Now().UTC(),
 		})
@@ -414,7 +420,12 @@ func scrubbed(err error, seed string) string {
 // A failed send does NOT fall back to grafting. The user asked to continue a
 // conversation; handing them a fork instead gives them two lines where they
 // expected one, and they will not notice until much later.
-func foldBackCmd(a adapter.Adapter, st *store.Store, at *tree.Node, dst string, sum store.Summary, liveAgent string, send SendFunc) tea.Cmd {
+// foldBackCmd appends at graftID when it grafts (branch here, §2.5b): the
+// whole turn at belongs to, not at's own entry, so the seed never lands
+// right after an unanswered prompt. The live-tip send path ignores graftID —
+// it appends live, nothing is grafted — so callers on that path may pass
+// at.Node.ID unwidened.
+func foldBackCmd(a adapter.Adapter, st *store.Store, at *tree.Node, graftID, dst string, sum store.Summary, liveAgent string, send SendFunc) tea.Cmd {
 	return func() tea.Msg {
 		sending := at.IsSessionLeaf && liveAgent != "" && send != nil
 		seed := foldBackSeed(at, sum, !sending)
@@ -425,12 +436,12 @@ func foldBackCmd(a adapter.Adapter, st *store.Store, at *tree.Node, dst string, 
 			return actionDoneMsg{status: "sent to " + liveAgent, quit: true}
 		}
 		src := adapter.Session{ID: at.SessionID, CWD: at.SessionCWD, Path: at.SessionPath}
-		sid, err := a.BranchSeeded(src, at.Node.ID, dst, seed)
+		sid, err := a.BranchSeeded(src, graftID, dst, seed)
 		if err != nil {
 			return actionDoneMsg{status: "branch failed: " + scrubbed(err, seed)}
 		}
 		st.Add(sid, store.Branch{
-			GraftedFrom: store.From{SessionID: at.SessionID, Node: at.Node.ID},
+			GraftedFrom: store.From{SessionID: at.SessionID, Node: graftID},
 			Title:       "⤶ " + title(sum.Text, 40),
 			CreatedAt:   time.Now().UTC(),
 		})
@@ -683,13 +694,20 @@ func (u uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return u.openTip(n)
 			}
 			src := adapter.Session{ID: n.SessionID, CWD: n.SessionCWD, Path: n.SessionPath}
-			turns, entries, size, err := u.a.Preview(src, n.Node.ID)
+			// Graft after the WHOLE turn n is in (§2.5b), not at n's own
+			// entry: n may be an unanswered prompt row.
+			sp, err := u.a.Widen(src, n.Node.ID, n.Node.ID)
+			if err != nil {
+				u.status = "cannot continue from here: " + err.Error()
+				return u, nil
+			}
+			turns, entries, size, err := u.a.Preview(src, sp.End)
 			if err != nil {
 				u.status = "cannot continue from here: " + err.Error()
 				return u, nil
 			}
 			u.confirm = confirmText(n, turns, entries, size, u.dstCWD(n))
-			u.pending, u.pendingBusy = branchCmd(u.a, u.st, n, u.dstCWD(n)), "branching…"
+			u.pending, u.pendingBusy = branchCmd(u.a, u.st, n, sp.End, u.dstCWD(n)), "branching…"
 		case "a":
 			u.scopeAll = !u.scopeAll
 			u.rebuild()

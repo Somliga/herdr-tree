@@ -466,6 +466,37 @@ func TestScenarioBranchOfABranch(t *testing.T) {
 	checkLines(t, u, sidT, b, c)
 }
 
+// A2. ⏎ on a folded head row grafts after the WHOLE turn it belongs to
+// (§2.5b), not at the prompt itself: branching on t2's PROMPT row must land
+// exactly where branching on its REPLY row would — right under t2-r, with
+// t2-r itself not duplicated into the branch as a visible copy.
+func TestScenarioBranchStartsAfterTheWholeTurn(t *testing.T) {
+	w := newWorld(t)
+	w.trunk(sidT, "t1", "t2", "t3")
+
+	b := w.branch(sidT, sidT, "t2-p") // the folded head row, not its reply
+
+	es, _, err := claude.ParseFile(w.path(b))
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := ""
+	for _, e := range es {
+		if u := e.UUID(); u != "" {
+			last = u
+		}
+	}
+	if last != "t2-r" {
+		t.Fatalf("branch file's last copied entry is %q, want t2-r (t2's whole turn, not just its prompt)", last)
+	}
+
+	w.typeInto(b, "b1")
+	u := allOf(w.open(b))
+	checkLines(t, u, sidT, b)
+	checkHangsUnder(t, u, b, "b1-p", sidT, "t2-r")
+	checkNoCopies(t, u)
+}
+
 // B. squash into… moves a branch's turns into the trunk, then the trunk's
 // into a branch of that branch.
 func TestScenarioSquashIntoAcrossBranches(t *testing.T) {

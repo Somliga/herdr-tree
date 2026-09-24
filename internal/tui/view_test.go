@@ -79,6 +79,7 @@ type fakeAdapter struct {
 	summarisedFrom, summarisedTo string
 	summarisedCompact            bool
 	seededWith                   string
+	branchedAt                   string // the node id Branch/BranchSeeded was called with
 	resumed                      string
 	focused                      bool
 
@@ -101,9 +102,13 @@ func (f *fakeAdapter) Current(adapter.Pane) (string, error)       { return "", n
 func (f *fakeAdapter) Preview(adapter.Session, string) (int, int, int64, error) {
 	return 1, 2, 3, nil
 }
-func (f *fakeAdapter) Branch(adapter.Session, string, string) (string, error) { return "new-sid", nil }
-func (f *fakeAdapter) BranchSeeded(src adapter.Session, _, _, seed string) (string, error) {
+func (f *fakeAdapter) Branch(_ adapter.Session, atNode, _ string) (string, error) {
+	f.branchedAt = atNode
+	return "new-sid", nil
+}
+func (f *fakeAdapter) BranchSeeded(src adapter.Session, atNode, _, seed string) (string, error) {
 	f.writes = append(f.writes, "graft "+src.ID)
+	f.branchedAt = atNode
 	if f.seedErr != nil {
 		return "", f.seedErr
 	}
@@ -442,6 +447,27 @@ func TestEnterOnEarlierTurnConfirmsAndWritesNothingUntilConfirmed(t *testing.T) 
 	}
 }
 
+// TestEnterOnAPromptRowGraftsAfterTheWholeTurn is §2.5b: a folded head row's
+// own entry is the prompt, and grafting there would leave it unanswered for
+// the resumed agent to answer again. The graft must land on the turn's last
+// entry instead — what Widen(n, n) reports as its Span.End.
+func TestEnterOnAPromptRowGraftsAfterTheWholeTurn(t *testing.T) {
+	n := &tree.Node{Node: adapter.Node{ID: "prompt-id", Title: "a prompt with a reply"}, SessionID: "sid-a"}
+	fa := &fakeAdapter{span: adapter.Span{End: "reply-id"}}
+	u := uiModel{m: New([]*tree.Node{n}), a: fa, st: loadedStore(t)}
+
+	after, _ := u.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	_, cmd2 := after.(uiModel).Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd2 == nil {
+		t.Fatal("want branchCmd once confirmed")
+	}
+	cmd2()
+
+	if fa.branchedAt != "reply-id" {
+		t.Fatalf("want the graft at the turn's last entry %q, got %q", "reply-id", fa.branchedAt)
+	}
+}
+
 func TestEnterOnBrokenRowDoesNothing(t *testing.T) {
 	n := &tree.Node{Node: adapter.Node{ID: "n1", Title: "x"}, SessionID: "sid-a", Broken: true}
 	u := uiModel{m: New([]*tree.Node{n}), a: &fakeAdapter{}}
@@ -579,7 +605,7 @@ func TestFoldBackAtAnEarlierTurnSeedsAGraft(t *testing.T) {
 	at := New(session("s", "t1", "t2")).Rows()[0].Node // an earlier turn, not the tip
 	sum := store.Summary{Text: "what the branch found", SessionID: "other", FromTurn: "a", ToTurn: "b"}
 
-	msg := foldBackCmd(fa, st, at, "/repo", sum, "", nil)().(actionDoneMsg)
+	msg := foldBackCmd(fa, st, at, at.Node.ID, "/repo", sum, "", nil)().(actionDoneMsg)
 
 	if fa.seededWith == "" {
 		t.Fatal("an earlier turn must be seeded via BranchSeeded")
@@ -611,7 +637,7 @@ func TestFoldBackOfThisLinesOwnSummaryIsMarkedAsCompaction(t *testing.T) {
 	at := New(session("s", "t1", "t2", "t3")).Rows()[0].Node
 	sum := store.Summary{Text: "eight turns of auth work", SessionID: "s", FromTurn: "t2", ToTurn: "t3"}
 
-	foldBackCmd(fa, st, at, "/repo", sum, "", nil)()
+	foldBackCmd(fa, st, at, at.Node.ID, "/repo", sum, "", nil)()
 
 	if !strings.HasPrefix(fa.seededWith, claudeCompactionPrefix) {
 		t.Fatal("a summary of this same session must seed as a compaction")
@@ -630,7 +656,7 @@ func TestFoldBackAtTheLiveTipSendsAMessage(t *testing.T) {
 
 	var gotAgent, gotText string
 	send := func(agent, text string) error { gotAgent, gotText = agent, text; return nil }
-	msg := foldBackCmd(fa, st, tip, "/repo", sum, "tree-agent", send)().(actionDoneMsg)
+	msg := foldBackCmd(fa, st, tip, tip.Node.ID, "/repo", sum, "tree-agent", send)().(actionDoneMsg)
 
 	if fa.seededWith != "" {
 		t.Fatal("the live tip must not be grafted: a 6.6MB copy to deliver one message")
@@ -659,7 +685,7 @@ func TestABlockedAgentSurfacesAndDoesNotGraftInstead(t *testing.T) {
 
 	blocked := errors.New("agent is waiting for input of its own")
 	send := func(string, string) error { return blocked }
-	msg := foldBackCmd(fa, st, tip, "/repo",
+	msg := foldBackCmd(fa, st, tip, tip.Node.ID, "/repo",
 		store.Summary{Text: "x", SessionID: "other"}, "tree-agent", send)().(actionDoneMsg)
 
 	if fa.seededWith != "" {
@@ -833,6 +859,31 @@ func TestPickerFoldsTheChosenSummaryInAtTheSelectedTurn(t *testing.T) {
 	}
 }
 
+// TestBranchHereGraftsAfterTheWholeTurn is §2.5b's second path: branch here
+// (from p's place menu) must graft at the turn's last entry too, not at the
+// row it was chosen on.
+func TestBranchHereGraftsAfterTheWholeTurn(t *testing.T) {
+	st := loadedStore(t)
+	st.AddSummary(store.Summary{Text: "what the branch found", SessionID: "other", FromTurn: "a", ToTurn: "b"})
+	fa := &fakeAdapter{span: adapter.Span{End: "reply-id"}}
+	u := uiModel{m: New(session("s", "t1", "t2")), a: fa, st: st, repoRoot: "/repo"}
+	u.m.Cursor = 0 // an earlier turn, not the tip
+
+	after, _ := u.Update(key('p'))
+	after2, _ := after.(uiModel).Update(tea.KeyMsg{Type: tea.KeyEnter})     // picks the summary
+	after3, _ := after2.(uiModel).Update(tea.KeyMsg{Type: tea.KeyDown})     // place menu: branch here
+	after4, _ := after3.(uiModel).Update(tea.KeyMsg{Type: tea.KeyEnter})    // shows the cost
+	_, cmd := after4.(uiModel).Update(tea.KeyMsg{Type: tea.KeyEnter})       // confirms
+	if cmd == nil {
+		t.Fatal("want foldBackCmd once confirmed")
+	}
+	cmd()
+
+	if fa.branchedAt != "reply-id" {
+		t.Fatalf("want the graft at the turn's last entry %q, got %q", "reply-id", fa.branchedAt)
+	}
+}
+
 // Only the tip of the session the user is actually in can take a message. A
 // leaf of some other session is the end of a conversation nobody is holding,
 // and sending there would deliver the summary into the wrong agent.
@@ -901,17 +952,17 @@ func TestNoStatusLineCarriesTheSummary(t *testing.T) {
 	op := editOp{src: adapter.Session{ID: "s"}, kind: store.KindCompacted, summarise: true, from: early, to: tip}
 	collect(editCmd(&fakeAdapter{summary: sum.Text}, st, op, nil)())
 	// folding back as a graft, succeeding
-	collect(foldBackCmd(&fakeAdapter{}, loadedStore(t), early, "/repo", sum, "", nil)())
+	collect(foldBackCmd(&fakeAdapter{}, loadedStore(t), early, early.Node.ID, "/repo", sum, "", nil)())
 	// folding back as a message, succeeding
-	collect(foldBackCmd(&fakeAdapter{}, loadedStore(t), tip, "/repo", sum, "wA:p1",
+	collect(foldBackCmd(&fakeAdapter{}, loadedStore(t), tip, tip.Node.ID, "/repo", sum, "wA:p1",
 		func(string, string) error { return nil })())
 	// and failing with an error that quotes the message back at us, which is
 	// exactly what herdr does with an argument it would not accept
 	quoting := func(_, text string) error { return errors.New("herdr agent prompt: rejected " + text) }
-	collect(foldBackCmd(&fakeAdapter{}, loadedStore(t), tip, "/repo", sum, "wA:p1", quoting)())
+	collect(foldBackCmd(&fakeAdapter{}, loadedStore(t), tip, tip.Node.ID, "/repo", sum, "wA:p1", quoting)())
 	// and the graft path failing the same way
 	echoing := &fakeAdapter{seedErr: errors.New("graft refused: " + sum.Text)}
-	collect(foldBackCmd(echoing, loadedStore(t), early, "/repo", sum, "", nil)())
+	collect(foldBackCmd(echoing, loadedStore(t), early, early.Node.ID, "/repo", sum, "", nil)())
 
 	if len(statuses) != 5 {
 		t.Fatalf("setup: collected %d statuses", len(statuses))
@@ -932,7 +983,7 @@ func TestNoStatusLineCarriesTheSummary(t *testing.T) {
 func TestAStoredTitleIsABoundedSingleLine(t *testing.T) {
 	st := loadedStore(t)
 	at := New(session("s", "t1", "t2")).Rows()[0].Node
-	foldBackCmd(&fakeAdapter{}, st, at, "/repo", summaryWithSentinel(), "", nil)()
+	foldBackCmd(&fakeAdapter{}, st, at, at.Node.ID, "/repo", summaryWithSentinel(), "", nil)()
 
 	b, ok := st.Branches["new-sid"]
 	if !ok {
