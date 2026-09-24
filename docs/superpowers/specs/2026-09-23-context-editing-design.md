@@ -130,6 +130,15 @@ is not warned about.
 "Merge and remove everything after" is not offered: it is a drop plus a
 merge, and `s` → drop covers it.
 
+### 2.5b Branching starts after the whole turn
+
+`⏎` on any row of a turn that is not the line's tip, and **branch here**
+(from `p` or squash into…), graft at the **last entry of that turn** — the
+same whole-turn rule as §3.1 — not at the row's own entry. Grafting at a
+prompt would leave it unanswered, so the resumed agent answers it again, and
+a seed placed after it would make two user messages in a row. `⏎` on a line's
+tip still resumes it unchanged.
+
 ### 2.6 The summary is still stored
 
 Both summarise options store the summary exactly as v2 does, so `p` can merge
