@@ -139,6 +139,19 @@ prompt would leave it unanswered, so the resumed agent answers it again, and
 a seed placed after it would make two user messages in a row. `⏎` on a line's
 tip still resumes it unchanged.
 
+### 2.5c `⏎` continues, `b` branches
+
+- **`⏎` — continue here.** On a line's tip: resume it (or the §6.2 handover).
+  On an earlier turn: continue from the end of that turn — a graft (§2.5b)
+  that is then opened in a pane, after a confirmation. Unchanged behaviour,
+  now named for what it does.
+- **`b` — branch here.** Grafts from the end of the turn under the cursor
+  (§2.5b), opens nothing, asks nothing: the tree reloads with the cursor on
+  the new branch, status `branched <new8> — ⏎ on it to open it`. On a tip it
+  makes a branch with nothing of its own yet (one row, §5.3b). Swallowed while
+  a range, a menu, a confirmation or squash into…'s target mode is active.
+- The footer reads `⏎ continue here · b branch · …`.
+
 ### 2.6 The summary is still stored
 
 Both summarise options store the summary exactly as v2 does, so `p` can merge
