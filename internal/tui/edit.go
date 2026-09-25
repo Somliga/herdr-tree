@@ -72,11 +72,39 @@ func (mv *foldMove) note() string {
 	return fmt.Sprintf("\n…and turns %d–%d are dropped from %s", mv.first, mv.last, shortID(mv.cut.src.ID))
 }
 
+// changedElsewhere is §5.1's refusal: "" if no line in sids was replaced
+// on disk since st loaded, else why the edit is refused. It is asked right
+// before anything is paid for or written, and again before a splice that
+// follows a summary. ponytail: a window is left between the check and the
+// splice's Save, which Save's merge settles for the later edit.
+func changedElsewhere(st *store.Store, sids ...string) string {
+	for _, sid := range sids {
+		replaced, err := st.ReplacedOnDisk(sid)
+		if err != nil {
+			return "cannot tell whether this line was changed in another overlay: " + err.Error() + " — nothing was written"
+		}
+		if replaced {
+			return "this line was changed in another overlay — reopen the tree"
+		}
+	}
+	return ""
+}
+
 // moveCmd is squash into…'s confirmed move (§2.7): the source is asked, the
 // summary made and stored, land writes it at the target, and cutAfter drops
 // the range from the source. Each runs only if the one before succeeded.
-func moveCmd(a adapter.Adapter, st *store.Store, mv foldMove, target string, live LiveFunc, land func(store.Summary) tea.Cmd) tea.Cmd {
+//
+// merge says land splices target, so target is checked as well as the source.
+// A branch or a send leaves target as it is and may start from an old line.
+func moveCmd(a adapter.Adapter, st *store.Store, mv foldMove, target string, merge bool, live LiveFunc, land func(store.Summary) tea.Cmd) tea.Cmd {
+	lines := []string{mv.cut.src.ID}
+	if merge {
+		lines = append(lines, target)
+	}
 	return func() tea.Msg {
+		if stale := changedElsewhere(st, lines...); stale != "" {
+			return actionDoneMsg{status: stale}
+		}
 		if live != nil {
 			_, status, err := live(mv.cut.src.ID)
 			if err != nil {
@@ -91,6 +119,9 @@ func moveCmd(a adapter.Adapter, st *store.Store, mv foldMove, target string, liv
 			return actionDoneMsg{status: failed}
 		}
 		mv.sum = sum
+		if stale := changedElsewhere(st, lines...); stale != "" {
+			return actionDoneMsg{status: "summary stored — " + stale}
+		}
 		return cutAfter(land(sum), a, st, mv, target, live)()
 	}
 }
@@ -127,11 +158,11 @@ func cutAfter(fold tea.Cmd, a adapter.Adapter, st *store.Store, mv foldMove, tar
 
 // confirmMove raises target mode's one confirmation: the cost, then what
 // lands at the target and what leaves the source (§2.7).
-func (u uiModel) confirmMove(at *tree.Node, then string, land func(store.Summary) tea.Cmd) (tea.Model, tea.Cmd) {
+func (u uiModel) confirmMove(at *tree.Node, then string, merge bool, land func(store.Summary) tea.Cmd) (tea.Model, tea.Cmd) {
 	mv := u.folding
 	u.confirm = fmt.Sprintf("%s%s · turns %d–%d are dropped from %s\n\n[enter] go   [esc] back",
 		mv.cost, then, mv.first, mv.last, shortID(mv.cut.src.ID))
-	u.pending, u.pendingBusy = moveCmd(u.a, u.st, *mv, at.SessionID, u.live, land), "summarising…"
+	u.pending, u.pendingBusy = moveCmd(u.a, u.st, *mv, at.SessionID, merge, u.live, land), "summarising…"
 	return u, nil
 }
 
@@ -158,6 +189,9 @@ func verb(kind string) string {
 // is the user's own ⏎ (§6.2).
 func editCmd(a adapter.Adapter, st *store.Store, op editOp, live LiveFunc) tea.Cmd {
 	return func() tea.Msg {
+		if stale := changedElsewhere(st, op.src.ID); stale != "" {
+			return actionDoneMsg{status: stale}
+		}
 		if op.summarise {
 			sum, failed := summariseRange(a, st, op)
 			if failed != "" {
@@ -182,6 +216,11 @@ func editCmd(a adapter.Adapter, st *store.Store, op editOp, live LiveFunc) tea.C
 					return actionDoneMsg{status: "summary stored — agent is " + status + "; select again or use p"}
 				}
 				return actionDoneMsg{status: "agent is " + status + " — wait for it to finish; nothing was written"}
+			}
+		}
+		if op.summarise {
+			if stale := changedElsewhere(st, op.src.ID); stale != "" {
+				return actionDoneMsg{status: "summary stored — " + stale}
 			}
 		}
 		res, err := a.Splice(op.src, op.edit, op.dst)
@@ -432,7 +471,7 @@ func (u uiModel) placeChosen(idx int) (tea.Model, tea.Cmd) {
 			return foldBackCmd(u.a, u.st, at, sp.End, u.dstCWD(at), sum, u.agentFor(at), u.send)
 		}
 		if u.folding != nil {
-			return u.confirmMove(at, "a new line branches at "+shortID(at.SessionID)+", carrying the summary", land)
+			return u.confirmMove(at, "a new line branches at "+shortID(at.SessionID)+", carrying the summary", false, land)
 		}
 		turns, entries, size, err := u.a.Preview(src, sp.End)
 		if err != nil {
@@ -454,7 +493,7 @@ func (u uiModel) placeChosen(idx int) (tea.Model, tea.Cmd) {
 		return editCmd(u.a, u.st, op, u.live)
 	}
 	if u.folding != nil {
-		return u.confirmMove(at, "the summary is merged into "+shortID(at.SessionID), land)
+		return u.confirmMove(at, "the summary is merged into "+shortID(at.SessionID), true, land)
 	}
 	sp, err := u.a.Widen(src, at.Node.ID, at.Node.ID)
 	if err != nil {
@@ -476,7 +515,7 @@ func (u uiModel) foldAt(at *tree.Node, sum store.Summary) (tea.Model, tea.Cmd) {
 			return foldBackCmd(u.a, u.st, at, at.Node.ID, u.dstCWD(at), sum, agent, u.send)
 		}
 		if u.folding != nil {
-			return u.confirmMove(at, "the summary is sent to "+agent+" as your next message", land)
+			return u.confirmMove(at, "the summary is sent to "+agent+" as your next message", false, land)
 		}
 		// Nothing is copied and nothing is written: the summary is the next
 		// message. There is no cost to show.

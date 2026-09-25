@@ -15,6 +15,8 @@ package tui
 // which would ask herdr for a pane, is recorded instead.
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -1014,10 +1016,9 @@ func TestScenarioALabelSetOnAReplacementReplacesTheOlderOne(t *testing.T) {
 }
 
 // Two overlays loaded from the same store both show T. The first drops t2;
-// the second, still showing the old tree, squashes t3..t4 of T. Nothing is
-// lost on disk, but the second edit is spliced from the stale T and its
-// replaced_by wins the merge: the first overlay's line becomes an orphan
-// root carrying copies of T's turns (BUG 5).
+// the second, still showing the old tree, squashes t3..t4 of T. The second
+// is refused before anything is paid for (§5.1): T was replaced since it
+// loaded, so it would splice a stale line and orphan the first edit's.
 func TestScenarioTwoOverlaysEditTheSameLine(t *testing.T) {
 	w := newWorld(t)
 	w.trunk(sidT, "t1", "t2", "t3", "t4")
@@ -1026,42 +1027,139 @@ func TestScenarioTwoOverlaysEditTheSameLine(t *testing.T) {
 	u1 = drive(t, selectRange(t, u1, sidT, "t2-p", "t2-r", 2), enter)
 	r1 := w.replacement(sidT)
 	u2 = drive(t, selectRange(t, u2, sidT, "t3-p", "t4-r", 0), enter)
-	// pins BUG 5's current outcome — invert when BUG 5 is fixed
-	if !strings.HasPrefix(u2.status, "squashed "+shortID(sidT)+" → ") {
-		t.Fatalf("second overlay's squash: %q", u2.status)
+	if u2.status != staleLine || w.summaries() != 0 {
+		t.Fatalf("second overlay's squash: %q, %d summary calls", u2.status, w.summaries())
 	}
-	r2 := w.replacement(sidT)
 
-	// What happens today: every transcript stays, the second edit wins T,
-	// and the first edit's line is still in the store and on screen.
-	for _, sid := range []string{sidT, r1, r2} {
+	for _, sid := range []string{sidT, r1} {
 		if _, err := os.Stat(w.path(sid)); err != nil {
 			t.Fatalf("%s is gone: %v", shortID(sid), err)
 		}
 	}
+	w.checkTranscripts(2)
 	st, _ := store.Load(w.repo)
-	// pins BUG 5's current outcome — invert when BUG 5 is fixed
-	if r2 == r1 || st.Branches[r1].Replaces != sidT || st.Branches[r2].Replaces != sidT {
-		t.Fatalf("store: T→%s, %s replaces %q, %s replaces %q", shortID(r2),
-			shortID(r1), st.Branches[r1].Replaces, shortID(r2), st.Branches[r2].Replaces)
+	if st.Resolve(sidT) != r1 || st.Branches[r1].Replaces != sidT {
+		t.Fatalf("store: T→%s, %s replaces %q", shortID(st.Resolve(sidT)), shortID(r1), st.Branches[r1].Replaces)
 	}
-	// pins BUG 5's current outcome — invert when BUG 5 is fixed
-	if got := rowText(w.open(sidT), r1, "t3-p"); got != "" {
-		t.Fatalf("scoped to T, the first overlay's line shows: %q", got)
+	if got := rowText(w.open(sidT), r1, "t3-p"); got == "" {
+		t.Fatalf("scoped to T, the first overlay's line does not show")
 	}
 	u := allOf(w.open(sidT))
-	// pins BUG 5's current outcome — invert when BUG 5 is fixed
-	checkLines(t, u, r1, r2)
-	// pins BUG 5's current outcome — invert when BUG 5 is fixed
-	if got := rowText(u, r2, "t2-p"); got == "" {
-		t.Fatalf("the winning line lost t2, which only the other overlay dropped:\n%s", strings.Join(screen(u), "\n"))
+	checkLines(t, u, r1)
+	if got := rowText(u, r1, "t2-p"); got != "" {
+		t.Fatalf("the dropped t2 shows again: %q", got)
+	}
+	checkNoCopies(t, u)
+}
+
+// staleLine is §5.1's refusal of an edit whose line another overlay replaced.
+const staleLine = "this line was changed in another overlay — reopen the tree"
+
+// checkTranscripts fails unless exactly n transcripts are on disk.
+func (w *world) checkTranscripts(n int) {
+	w.t.Helper()
+	m, _ := filepath.Glob(filepath.Join(w.proj, "*", "*.jsonl"))
+	if len(m) != n {
+		w.t.Fatalf("%d transcripts on disk, want %d: %v", len(m), n, m)
+	}
+}
+
+// storePath is where store.Load reads w's store.
+func (w *world) storePath() string {
+	sum := sha256.Sum256([]byte(w.repo))
+	return filepath.Join(os.Getenv("HERDR_PLUGIN_CONFIG_DIR"), hex.EncodeToString(sum[:])[:12], "tree.json")
+}
+
+// The line is replaced while the summary is being made: the summary is kept,
+// the splice is refused, and nothing else is written.
+func TestAnEditIsRefusedIfItsLineIsReplacedDuringTheSummary(t *testing.T) {
+	w := newWorld(t)
+	w.trunk(sidT, "t1", "t2", "t3", "t4")
+	u1, u2 := w.open(sidT), w.open(sidT)
+	u1 = drive(t, selectRange(t, u1, sidT, "t2-p", "t2-r", 2), enter)
+	r1 := w.replacement(sidT)
+
+	// Hide the drop until the summary call, which puts it back.
+	aside := filepath.Join(w.stubs, "tree-after.json")
+	if err := os.Rename(w.storePath(), aside); err != nil {
+		t.Fatal(err)
+	}
+	body := "#!/bin/sh\ncp " + aside + " " + w.storePath() + "\nprintf 'state: the fixed summary\\nnext: carry on\\n'\n"
+	if err := os.WriteFile(filepath.Join(w.stubs, "claude"), []byte(body), 0o700); err != nil {
+		t.Fatal(err)
 	}
 
-	t.Run("the stale overlay's edit does not orphan the other's", func(t *testing.T) {
-		t.Skip("BUG 5: a splice from a stale overlay reads the replaced T; its replaced_by wins and the first edit's line is left an unmarked root")
-		if r2 != r1 {
-			t.Errorf("T resolves to %s, want the first edit's %s kept (the stale edit refused)", shortID(r2), shortID(r1))
-		}
-		checkNoCopies(t, u)
-	})
+	u2 = drive(t, selectRange(t, u2, sidT, "t3-p", "t4-r", 0), enter)
+	if u2.status != "summary stored — "+staleLine {
+		t.Fatalf("status %q", u2.status)
+	}
+	w.checkTranscripts(2)
+	st, _ := store.Load(w.repo)
+	if st.Resolve(sidT) != r1 || len(st.Summaries) != 1 {
+		t.Fatalf("store: T→%s, %d summaries", shortID(st.Resolve(sidT)), len(st.Summaries))
+	}
+}
+
+// squash into… a line another overlay replaced is refused before the
+// summary: the merge's target is checked, not only its source.
+func TestAMergeIntoAReplacedLineIsRefused(t *testing.T) {
+	w := newWorld(t)
+	w.trunk(sidT, "t1", "t2", "t3")
+	w.trunk(sidU, "u1", "u2", "u3")
+	u1, u2 := w.open(sidT), allOf(w.open(sidU))
+	drive(t, selectRange(t, u1, sidT, "t2-p", "t2-r", 2), enter)
+	r1 := w.replacement(sidT)
+
+	u2 = selectRange(t, u2, sidU, "u2-p", "u3-r", 1)
+	u2 = drive(t, cursorTo(t, u2, sidT, "t3-r"), enter)
+	if u2.menu != "place" {
+		t.Fatalf("no place menu: %q", u2.status)
+	}
+	u2 = drive(t, u2, enter, enter) // merge here, confirm
+	if u2.status != staleLine || w.summaries() != 0 {
+		t.Fatalf("status %q, %d summary calls", u2.status, w.summaries())
+	}
+	w.checkTranscripts(3)
+	st, _ := store.Load(w.repo)
+	if st.Resolve(sidT) != r1 || st.Resolve(sidU) != sidU {
+		t.Fatalf("store: T→%s, U→%s", shortID(st.Resolve(sidT)), shortID(st.Resolve(sidU)))
+	}
+}
+
+// A store that cannot be read cannot say whether the line was replaced, so
+// the edit is refused rather than guessed at.
+func TestAnEditIsRefusedIfTheStoreCannotBeRead(t *testing.T) {
+	w := newWorld(t)
+	w.trunk(sidT, "t1", "t2", "t3")
+	u := w.open(sidT)
+	if err := os.MkdirAll(w.storePath(), 0o700); err != nil { // a directory: ReadFile fails
+		t.Fatal(err)
+	}
+	u = drive(t, selectRange(t, u, sidT, "t2-p", "t3-r", 0), enter)
+	if !strings.HasPrefix(u.status, "cannot tell whether this line was changed in another overlay: ") || w.summaries() != 0 {
+		t.Fatalf("status %q, %d summary calls", u.status, w.summaries())
+	}
+	w.checkTranscripts(1)
+}
+
+// squash into… from a line another overlay replaced is refused before the
+// summary, whatever its target.
+func TestAMoveFromAReplacedLineIsRefused(t *testing.T) {
+	w := newWorld(t)
+	w.trunk(sidT, "t1", "t2", "t3")
+	w.trunk(sidU, "u1", "u2")
+	u1, u2 := w.open(sidT), allOf(w.open(sidT))
+	drive(t, selectRange(t, u1, sidT, "t1-p", "t1-r", 2), enter)
+	r1 := w.replacement(sidT)
+
+	u2 = selectRange(t, u2, sidT, "t2-p", "t3-r", 1)
+	u2 = drive(t, cursorTo(t, u2, sidU, "u1-r"), enter)
+	u2 = drive(t, u2, down, enter, enter) // branch here, confirm
+	if u2.status != staleLine || w.summaries() != 0 {
+		t.Fatalf("status %q, %d summary calls", u2.status, w.summaries())
+	}
+	w.checkTranscripts(3)
+	if st, _ := store.Load(w.repo); st.Resolve(sidT) != r1 || len(st.Branches) != 2 {
+		t.Fatalf("store: T→%s, %d records", shortID(st.Resolve(sidT)), len(st.Branches))
+	}
 }
