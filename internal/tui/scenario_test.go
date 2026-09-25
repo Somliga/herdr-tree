@@ -618,6 +618,67 @@ func TestFoldOnABranchLandsOnItsHead(t *testing.T) {
 	})
 }
 
+// A branch of a branch of a branch with nothing new of its own: C's one
+// kept row (its copy of b1-r) sits under C's Superseded copy of b1-p, and D
+// hangs on that kept row. The UI never offers to branch from a line's tip, so
+// D's graft is written by hand, as a hand-edited store could. D renders
+// beside that kept row's section head, C's Superseded b1-p, which has no row;
+// stepping up must go past it to the head row it sits under, B's b1-p.
+func TestFoldOnABranchOfABranchLandsOnARowYouCanSee(t *testing.T) {
+	w := newWorld(t)
+	w.trunk(sidT, "APPLE", "BULLDOG", "TRIPPLEDIP")
+	b := w.branch(sidT, sidT, "BULLDOG-p")
+	w.typeInto(b, "b1", "b2")
+	c := w.branch(b, b, "b1-p")
+	d := "d4d4d4d4-0000-4000-8000-000000000004"
+	body, err := os.ReadFile(w.path(c))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(filepath.Dir(w.path(c)), d+".jsonl"),
+		[]byte(strings.ReplaceAll(string(body), c, d)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Load(w.repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.Add(d, store.Branch{GraftedFrom: store.From{SessionID: c, Node: "b1-r"}})
+	if err := st.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	check := func(t *testing.T, u uiModel) {
+		t.Helper()
+		i := -1
+		for j, r := range u.m.Rows() {
+			if r.Node.SessionID == d {
+				i = j
+				break
+			}
+		}
+		if i < 0 {
+			t.Fatalf("D's own row is not on screen:\n%s", strings.Join(screen(u), "\n"))
+		}
+		u.m.Cursor = i
+		u.m.Fold()
+		cur := u.m.Rows()[u.m.Cursor]
+		if cur.Node.SessionID != b || cur.Node.Node.ID != "b1-p" {
+			t.Fatalf("Fold() on D landed on %s %q, want B's b1-p:\n%s",
+				shortID(cur.Node.SessionID), cur.Node.Node.ID, strings.Join(screen(u), "\n"))
+		}
+	}
+
+	t.Run("folded", func(t *testing.T) {
+		check(t, allOf(w.open(d)))
+	})
+	t.Run("unfolded", func(t *testing.T) {
+		u := allOf(w.open(d))
+		unfold(u)
+		check(t, u)
+	})
+}
+
 // B. squash into… moves a branch's turns into the trunk, then the trunk's
 // into a branch of that branch.
 func TestScenarioSquashIntoAcrossBranches(t *testing.T) {
