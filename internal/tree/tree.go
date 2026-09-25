@@ -89,6 +89,18 @@ func attachPoint(chain []*Node, graftNode string, parentNodes map[string]*Node) 
 	return last
 }
 
+// lastCopied is the last node of chain that is also a node of the line it
+// left, "" when there is none.
+func lastCopied(chain []*Node, left map[string]bool) string {
+	out := ""
+	for _, n := range chain {
+		if left[n.Node.ID] {
+			out = n.Node.ID
+		}
+	}
+	return out
+}
+
 // label finds a turn's label on this line or, failing that, on the newest
 // earlier version of it along the replaces chain that has one: a replacement
 // keeps its turns' uuids, so a label follows its turn through every edit
@@ -201,6 +213,23 @@ func Build(sessions []adapter.Session, s *store.Store) []*Node {
 		return edges[i] < edges[j]
 	})
 
+	// nodeOf is every node id of a session's own transcript, hidden or not,
+	// and whether that transcript is here at all: whether an edge's fork
+	// point was a node on the line it LEFT is what tells an invisible fork
+	// point from a turn spliced away since.
+	sessionOf := make(map[string]adapter.Session, len(sessions))
+	for _, sess := range sessions {
+		sessionOf[sess.ID] = sess
+	}
+	nodeOf := func(sid string) (map[string]bool, bool) {
+		sess, ok := sessionOf[sid]
+		ids := map[string]bool{}
+		for _, n := range sess.Nodes {
+			ids[n.ID] = true
+		}
+		return ids, ok
+	}
+
 	attached := map[string]bool{}
 	for _, childSID := range edges {
 		br := s.Branches[childSID]
@@ -217,14 +246,22 @@ func Build(sessions []adapter.Session, s *store.Store) []*Node {
 		if !ok {
 			continue // parent session gone: child stays a root
 		}
-		parent, ok := parentNodes[br.GraftedFrom.Node]
+		graft := br.GraftedFrom.Node
+		if left, ok := nodeOf(from); ok && !left[graft] {
+			// Saved before edges were made to name a node: the fork point is
+			// the entry that ends its turn, often a system entry and no
+			// node. The turn is the last one the child copied from the line
+			// it left.
+			graft = lastCopied(order[childSID], left)
+		}
+		parent, ok := parentNodes[graft]
 		if !ok {
 			// The turn it left was spliced out of the line that replaced
 			// its parent. It stays a root, and says why.
 			child.FromRemoved = resolved != from
 			continue
 		}
-		start := attachPoint(order[childSID], br.GraftedFrom.Node, parentNodes)
+		start := attachPoint(order[childSID], graft, parentNodes)
 		if start == nil {
 			start = child
 		}

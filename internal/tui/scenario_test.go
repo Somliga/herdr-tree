@@ -1286,3 +1286,100 @@ func TestBranchHereMidLineShowsTheBranch(t *testing.T) {
 		t.Fatalf("want the branch's seed one level under TRIPPLEDIP, got %+v under %+v", mine, head)
 	}
 }
+
+// oldEdge makes a b on at and then saves its edge the way b did before
+// edges named a node: at the turn's closing turn_duration entry, id-d.
+func oldEdge(t *testing.T, w *world, at, id string) string {
+	t.Helper()
+	u := w.open(sidT)
+	u = drive(t, cursorTo(t, u, sidT, at), key('b'))
+	st, err := store.Load(w.repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for sid, b := range st.Branches {
+		if b.GraftedFrom.SessionID == sidT {
+			b.GraftedFrom.Node = id + "-d"
+			st.Branches[sid] = b
+			if err := st.Save(); err != nil {
+				t.Fatal(err)
+			}
+			return sid
+		}
+	}
+	t.Fatalf("no branch recorded: %q", u.status)
+	return ""
+}
+
+// TestAnEdgeSavedAtAnInvisibleForkPointStillAttaches heals the branches b,
+// ⏎ and branch here saved before the fix: the edge names a turn_duration
+// entry, which no line has a node for.
+func TestAnEdgeSavedAtAnInvisibleForkPointStillAttaches(t *testing.T) {
+	w := newWorld(t)
+	w.durations = true
+	w.trunk(sidT, "NUGGET", "TRIPPLEDIP", "BULLDOG", "HORSE")
+	b := oldEdge(t, w, "TRIPPLEDIP-p", "TRIPPLEDIP")
+	u := w.open(sidT)
+	u.m.RevealTip(b)
+	checkOneRowBranchUnder(t, w, u, "TRIPPLEDIP-p")
+
+	// With a turn of its own, none of its copies render.
+	w.typeInto(b, "OWN")
+	u = w.open(sidT)
+	checkHangsUnder(t, u, b, "OWN-p", sidT, "TRIPPLEDIP-r")
+	checkNoCopies(t, u)
+}
+
+// The healing must not hide a removed fork point: a turn dropped since still
+// leaves its branch a marked root, and a turn dropped before the fork point
+// still leaves the branch under the right turn of the new line.
+func TestAnInvisibleForkPointAfterADrop(t *testing.T) {
+	for _, tc := range []struct {
+		drop    string
+		removed bool
+	}{{"TRIPPLEDIP", true}, {"NUGGET", false}} {
+		t.Run(tc.drop, func(t *testing.T) {
+			w := newWorld(t)
+			w.durations = true
+			w.trunk(sidT, "NUGGET", "TRIPPLEDIP", "BULLDOG", "HORSE")
+			b := oldEdge(t, w, "TRIPPLEDIP-p", "TRIPPLEDIP")
+			u := selectRange(t, allOf(w.open(sidT)), sidT, tc.drop+"-p", tc.drop+"-r", 2)
+			u = drive(t, u, enter)
+			r := w.replacement(sidT)
+			if r == sidT {
+				t.Fatalf("no drop: %q", u.status)
+			}
+			u = allOf(w.open(r))
+			var root *tree.Node
+			for _, n := range u.m.Roots {
+				if n.SessionID == b {
+					root = n
+				}
+			}
+			if tc.removed {
+				if root == nil || !root.FromRemoved {
+					t.Fatalf("a branch off a dropped turn must be a marked root, got %+v:\n%s", root, strings.Join(screen(u), "\n"))
+				}
+				return
+			}
+			if root != nil {
+				t.Fatalf("the branch fell off the new line:\n%s", strings.Join(screen(u), "\n"))
+			}
+			checkHangsUnder(t, u, b, "TRIPPLEDIP-r", r, "TRIPPLEDIP-r")
+		})
+	}
+}
+
+// Spliced.After is the next turn's opening entry, always a node, so a drop
+// in real-shaped turns marks the row after it, not the line's last row.
+func TestADropInRealShapedTurnsMarksTheNextPrompt(t *testing.T) {
+	w := newWorld(t)
+	w.durations = true
+	w.trunk(sidT, "NUGGET", "TRIPPLEDIP", "BULLDOG")
+	u := selectRange(t, w.open(sidT), sidT, "TRIPPLEDIP-p", "TRIPPLEDIP-r", 2)
+	u = drive(t, u, enter)
+	r := w.replacement(sidT)
+	if got := rowText(u, r, "BULLDOG-p"); !strings.Contains(got, "✂ 1 turns dropped before this") {
+		t.Fatalf("row after the drop %q, want the ✂ marker:\n%s", got, strings.Join(screen(u), "\n"))
+	}
+}
