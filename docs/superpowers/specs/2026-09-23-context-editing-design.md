@@ -275,6 +275,13 @@ left; a compacted root stays a root.
 overwrite one on disk that has it, so a second overlay saving an unrelated
 change cannot un-hide a replaced line.
 
+An edit is refused if its line was replaced since the overlay loaded — by
+another overlay, say. Immediately before anything is paid for or written, the
+store is re-read from disk; if the source line (or, for a merge, the target
+line) now has `replaced_by`, nothing is summarised or written and the status
+says `this line was changed in another overlay — reopen the tree`. The same
+check runs again right before the splice, after a summary.
+
 A session is hidden only if the session it resolves to is present. If the
 replacement's file is gone, the old line shows again rather than vanishing.
 
