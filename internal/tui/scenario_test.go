@@ -621,9 +621,9 @@ func TestFoldOnABranchLandsOnItsHead(t *testing.T) {
 // A branch of a branch of a branch with nothing new of its own: C's one
 // kept row (its copy of b1-r) sits under C's Superseded copy of b1-p, and D
 // hangs on that kept row. The UI never offers to branch from a line's tip, so
-// D's graft is written by hand, as a hand-edited store could. D renders
-// beside that kept row's section head, C's Superseded b1-p, which has no row;
-// stepping up must go past it to the head row it sits under, B's b1-p.
+// D's graft is written by hand, as a hand-edited store could. D is drawn one
+// level under C's kept b1-r row, so stepping up lands there, the row drawn
+// directly above it one level out, not on some ancestor in the graph.
 func TestFoldOnABranchOfABranchLandsOnARowYouCanSee(t *testing.T) {
 	w := newWorld(t)
 	w.trunk(sidT, "APPLE", "BULLDOG", "TRIPPLEDIP")
@@ -663,8 +663,8 @@ func TestFoldOnABranchOfABranchLandsOnARowYouCanSee(t *testing.T) {
 		u.m.Cursor = i
 		u.m.Fold()
 		cur := u.m.Rows()[u.m.Cursor]
-		if cur.Node.SessionID != b || cur.Node.Node.ID != "b1-p" {
-			t.Fatalf("Fold() on D landed on %s %q, want B's b1-p:\n%s",
+		if cur.Node.SessionID != c || cur.Node.Node.ID != "b1-r" {
+			t.Fatalf("Fold() on D landed on %s %q, want C's b1-r:\n%s",
 				shortID(cur.Node.SessionID), cur.Node.Node.ID, strings.Join(screen(u), "\n"))
 		}
 	}

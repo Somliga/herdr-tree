@@ -441,21 +441,12 @@ func childDepth(n, c *tree.Node, depth int) int {
 func (m *Model) Rows() []Row {
 	var out []Row
 	visited := map[*tree.Node]bool{}
-	var walk func(n *tree.Node, depth int, nOnTrunk bool, parent *tree.Node)
-	walk = func(n *tree.Node, depth int, nOnTrunk bool, parent *tree.Node) {
+	var walk func(n *tree.Node, depth int, nOnTrunk bool)
+	walk = func(n *tree.Node, depth int, nOnTrunk bool) {
 		if visited[n] {
 			return
 		}
 		visited[n] = true
-		if parent != nil {
-			// Keep m.parent in step with orderedChildren's own placement,
-			// not Build's raw Children graph: a lifted graft (one that
-			// attached to a body row but renders beside its section head,
-			// §5.3d) is n's child here even though it is still, physically,
-			// the body row's. Fold()'s jump-to-parent relies on this being
-			// the RENDERED parent, not the structural one.
-			m.parent[n] = parent
-		}
 		// A Superseded node never has a row, so it can never be reached to
 		// unfold, and folding it would bury its own body permanently. Belt
 		// and braces alongside New() never setting m.Folded for one.
@@ -482,17 +473,17 @@ func (m *Model) Rows() []Row {
 				if c.SessionID == n.SessionID && !c.IsHead {
 					continue // folding hides this node's own body
 				}
-				walk(c, childDepth(n, c, depth), onTrunkOf[c], n)
+				walk(c, childDepth(n, c, depth), onTrunkOf[c])
 			}
 			return
 		}
 		// A hidden (filtered) node still does not hide its children.
 		for _, c := range order {
-			walk(c, childDepth(n, c, depth), onTrunkOf[c], n)
+			walk(c, childDepth(n, c, depth), onTrunkOf[c])
 		}
 	}
 	for _, r := range m.Roots {
-		walk(r, 0, m.onTrunk(r), nil)
+		walk(r, 0, m.onTrunk(r))
 	}
 	if from, to, ok := m.rangeIndices(out); ok {
 		for i := from; i <= to; i++ {
@@ -539,21 +530,15 @@ func (m *Model) Fold() {
 		m.Folded[n] = true
 		return
 	}
-	// Jump to the nearest ancestor that has a row of its own: a Superseded
-	// copy, a hidden (filtered) node or a folded-away body row has none.
-	// m.parent is the rendered parent here (Selected just ran Rows()), and
-	// the walk is cycle-guarded against a corrupt (hand-edited) store.
-	at := map[*tree.Node]int{}
-	for i, r := range m.Rows() {
-		at[r.Node] = i
-	}
-	seen := map[*tree.Node]bool{n: true}
-	for p := m.parent[n]; p != nil && !seen[p]; p = m.parent[p] {
-		if i, ok := at[p]; ok {
+	// Jump to the row drawn one level out: the nearest row above with a
+	// smaller Depth. That is what the screen shows as the parent, whatever
+	// the graph says (a lifted graft, a Superseded or folded-away ancestor).
+	rows := m.Rows()
+	for i := m.Cursor - 1; i >= 0; i-- {
+		if rows[i].Depth < rows[m.Cursor].Depth {
 			m.Cursor = i
 			return
 		}
-		seen[p] = true
 	}
 }
 

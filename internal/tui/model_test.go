@@ -108,7 +108,11 @@ func TestCyclicTreeDoesNotCrashOrHang(t *testing.T) {
 }
 
 func TestFoldOnLeafMovesToParent(t *testing.T) {
-	m := New([]*tree.Node{chain("n1", "n2")})
+	// Build always makes a session's first node a head, so n2 is its body.
+	root := chain("n1", "n2")
+	root.IsHead = true
+	m := New([]*tree.Node{root})
+	unfoldAll(m)
 	m.Down() // on n2, a leaf
 	m.Fold()
 	if m.Cursor != 0 {
@@ -462,6 +466,27 @@ func TestFoldOnALeafSkipsPastASupersededParent(t *testing.T) {
 	m.Fold()
 	if m.Selected().Node.ID != "n1" {
 		t.Fatalf("folding the leaf should jump to trunk's n1 (skipping the Superseded copy), got %+v", m.Selected())
+	}
+}
+
+// A body row's siblings sit at its own depth, one row above it; stepping up
+// must skip them and land on the head, one level out.
+func TestFoldOnABodyRowJumpsToItsHeadNotASibling(t *testing.T) {
+	sess := mkTypedSess("s1",
+		turn("p1", adapter.KindHuman),
+		turn("r1", adapter.KindAssistant),
+		turn("r2", adapter.KindAssistant),
+	)
+	m := New(tree.Build([]adapter.Session{sess}, &store.Store{Branches: map[string]store.Branch{}}))
+	unfoldAll(m)
+	m.Down()
+	m.Down() // on r2, just below its sibling r1
+	if m.Selected().Node.ID != "r2" {
+		t.Fatalf("expected cursor on r2, got %+v", m.Selected())
+	}
+	m.Fold()
+	if m.Selected().Node.ID != "p1" {
+		t.Fatalf("stepping up from r2 should land on its head p1, got %q", m.Selected().Node.ID)
 	}
 }
 
