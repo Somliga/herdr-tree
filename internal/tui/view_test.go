@@ -619,7 +619,7 @@ func TestFoldBackAtAnEarlierTurnSeedsAGraft(t *testing.T) {
 	at := New(session("s", "t1", "t2")).Rows()[0].Node // an earlier turn, not the tip
 	sum := store.Summary{Text: "what the branch found", SessionID: "other", FromTurn: "a", ToTurn: "b"}
 
-	msg := foldBackCmd(fa, st, at, at.Node.ID, "/repo", sum, "", nil)().(actionDoneMsg)
+	msg := foldBackCmd(fa, st, at, entrySpan(at.Node.ID), "/repo", sum, "", nil)().(actionDoneMsg)
 
 	if fa.seededWith == "" {
 		t.Fatal("an earlier turn must be seeded via BranchSeeded")
@@ -651,7 +651,7 @@ func TestFoldBackOfThisLinesOwnSummaryIsMarkedAsCompaction(t *testing.T) {
 	at := New(session("s", "t1", "t2", "t3")).Rows()[0].Node
 	sum := store.Summary{Text: "eight turns of auth work", SessionID: "s", FromTurn: "t2", ToTurn: "t3"}
 
-	foldBackCmd(fa, st, at, at.Node.ID, "/repo", sum, "", nil)()
+	foldBackCmd(fa, st, at, entrySpan(at.Node.ID), "/repo", sum, "", nil)()
 
 	if !strings.HasPrefix(fa.seededWith, claudeCompactionPrefix) {
 		t.Fatal("a summary of this same session must seed as a compaction")
@@ -670,7 +670,7 @@ func TestFoldBackAtTheLiveTipSendsAMessage(t *testing.T) {
 
 	var gotAgent, gotText string
 	send := func(agent, text string) error { gotAgent, gotText = agent, text; return nil }
-	msg := foldBackCmd(fa, st, tip, tip.Node.ID, "/repo", sum, "tree-agent", send)().(actionDoneMsg)
+	msg := foldBackCmd(fa, st, tip, entrySpan(tip.Node.ID), "/repo", sum, "tree-agent", send)().(actionDoneMsg)
 
 	if fa.seededWith != "" {
 		t.Fatal("the live tip must not be grafted: a 6.6MB copy to deliver one message")
@@ -699,7 +699,7 @@ func TestABlockedAgentSurfacesAndDoesNotGraftInstead(t *testing.T) {
 
 	blocked := errors.New("agent is waiting for input of its own")
 	send := func(string, string) error { return blocked }
-	msg := foldBackCmd(fa, st, tip, tip.Node.ID, "/repo",
+	msg := foldBackCmd(fa, st, tip, entrySpan(tip.Node.ID), "/repo",
 		store.Summary{Text: "x", SessionID: "other"}, "tree-agent", send)().(actionDoneMsg)
 
 	if fa.seededWith != "" {
@@ -966,17 +966,17 @@ func TestNoStatusLineCarriesTheSummary(t *testing.T) {
 	op := editOp{src: adapter.Session{ID: "s"}, kind: store.KindCompacted, summarise: true, from: early, to: tip}
 	collect(editCmd(&fakeAdapter{summary: sum.Text}, st, op, nil)())
 	// folding back as a graft, succeeding
-	collect(foldBackCmd(&fakeAdapter{}, loadedStore(t), early, early.Node.ID, "/repo", sum, "", nil)())
+	collect(foldBackCmd(&fakeAdapter{}, loadedStore(t), early, entrySpan(early.Node.ID), "/repo", sum, "", nil)())
 	// folding back as a message, succeeding
-	collect(foldBackCmd(&fakeAdapter{}, loadedStore(t), tip, tip.Node.ID, "/repo", sum, "wA:p1",
+	collect(foldBackCmd(&fakeAdapter{}, loadedStore(t), tip, entrySpan(tip.Node.ID), "/repo", sum, "wA:p1",
 		func(string, string) error { return nil })())
 	// and failing with an error that quotes the message back at us, which is
 	// exactly what herdr does with an argument it would not accept
 	quoting := func(_, text string) error { return errors.New("herdr agent prompt: rejected " + text) }
-	collect(foldBackCmd(&fakeAdapter{}, loadedStore(t), tip, tip.Node.ID, "/repo", sum, "wA:p1", quoting)())
+	collect(foldBackCmd(&fakeAdapter{}, loadedStore(t), tip, entrySpan(tip.Node.ID), "/repo", sum, "wA:p1", quoting)())
 	// and the graft path failing the same way
 	echoing := &fakeAdapter{seedErr: errors.New("graft refused: " + sum.Text)}
-	collect(foldBackCmd(echoing, loadedStore(t), early, early.Node.ID, "/repo", sum, "", nil)())
+	collect(foldBackCmd(echoing, loadedStore(t), early, entrySpan(early.Node.ID), "/repo", sum, "", nil)())
 
 	if len(statuses) != 5 {
 		t.Fatalf("setup: collected %d statuses", len(statuses))
@@ -997,7 +997,7 @@ func TestNoStatusLineCarriesTheSummary(t *testing.T) {
 func TestAStoredTitleIsABoundedSingleLine(t *testing.T) {
 	st := loadedStore(t)
 	at := New(session("s", "t1", "t2")).Rows()[0].Node
-	foldBackCmd(&fakeAdapter{}, st, at, at.Node.ID, "/repo", summaryWithSentinel(), "", nil)()
+	foldBackCmd(&fakeAdapter{}, st, at, entrySpan(at.Node.ID), "/repo", summaryWithSentinel(), "", nil)()
 
 	b, ok := st.Branches["new-sid"]
 	if !ok {

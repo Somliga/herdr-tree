@@ -468,7 +468,7 @@ func (u uiModel) placeChosen(idx int) (tea.Model, tea.Cmd) {
 			return u, nil
 		}
 		land := func(sum store.Summary) tea.Cmd {
-			return foldBackCmd(u.a, u.st, at, sp.End, u.dstCWD(at), sum, u.agentFor(at), u.send)
+			return foldBackCmd(u.a, u.st, at, sp, u.dstCWD(at), sum, u.agentFor(at), u.send)
 		}
 		if u.folding != nil {
 			return u.confirmMove(at, "a new line branches at "+shortID(at.SessionID)+", carrying the summary", false, land)
@@ -510,9 +510,9 @@ func (u uiModel) placeChosen(idx int) (tea.Model, tea.Cmd) {
 // In target mode each of those landings is confirmed with the cost (§2.7).
 func (u uiModel) foldAt(at *tree.Node, sum store.Summary) (tea.Model, tea.Cmd) {
 	if agent := u.agentFor(at); agent != "" && at.IsSessionLeaf && u.send != nil {
-		// The live tip: foldBackCmd's send path ignores graftID entirely.
+		// The live tip: foldBackCmd's send path ignores sp entirely.
 		land := func(sum store.Summary) tea.Cmd {
-			return foldBackCmd(u.a, u.st, at, at.Node.ID, u.dstCWD(at), sum, agent, u.send)
+			return foldBackCmd(u.a, u.st, at, entrySpan(at.Node.ID), u.dstCWD(at), sum, agent, u.send)
 		}
 		if u.folding != nil {
 			return u.confirmMove(at, "the summary is sent to "+agent+" as your next message", false, land)

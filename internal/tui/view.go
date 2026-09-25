@@ -331,21 +331,23 @@ func resumeCmd(a adapter.Adapter, n *tree.Node, dst string) tea.Cmd {
 	}
 }
 
-// graftAndRecord grafts n's session at graftID into dst, records the new
+// graftAndRecord grafts n's session at sp into dst, records the new
 // branch's edge and saves the store — the part branchCmd (⏎, which then opens
-// the result) and branchHereCmd (b, which does not, §2.5c) share. graftID is
-// stored, not n.Node.ID: it must be the id the branch file actually copied up
-// to, so tree.Build's attachPoint counts the right number of copies. The edge
-// is recorded before either caller does anything else: the transcript now
-// exists, so the branch must survive even if what follows fails.
-func graftAndRecord(a adapter.Adapter, st *store.Store, n *tree.Node, graftID, dst string) (sid string, err error) {
+// the result) and branchHereCmd (b, which does not, §2.5c) share. The branch
+// copies up to sp.End, the turn's last entry, but the edge names sp.EndNode,
+// the turn's last NODE, not n.Node.ID: tree.Build hangs the branch on that
+// node and attachPoint counts the copies up to it. End itself is usually a
+// system entry that is no node, and an edge naming it attaches nowhere. The
+// edge is recorded before either caller does anything else: the transcript
+// now exists, so the branch must survive even if what follows fails.
+func graftAndRecord(a adapter.Adapter, st *store.Store, n *tree.Node, sp adapter.Span, dst string) (sid string, err error) {
 	src := adapter.Session{ID: n.SessionID, CWD: n.SessionCWD, Path: n.SessionPath}
-	sid, err = a.Branch(src, graftID, dst)
+	sid, err = a.Branch(src, sp.End, dst)
 	if err != nil {
 		return "", fmt.Errorf("branch failed: %w", err)
 	}
 	st.Add(sid, store.Branch{
-		GraftedFrom: store.From{SessionID: n.SessionID, Node: graftID},
+		GraftedFrom: store.From{SessionID: n.SessionID, Node: sp.EndNode},
 		Title:       n.Node.Title,
 		CreatedAt:   time.Now().UTC(),
 	})
@@ -355,13 +357,16 @@ func graftAndRecord(a adapter.Adapter, st *store.Store, n *tree.Node, graftID, d
 	return sid, nil
 }
 
-// branchCmd grafts at graftID — the whole turn n belongs to, not n's own
+// entrySpan is a graft at id itself: a tip, whose turn it already ends.
+func entrySpan(id string) adapter.Span { return adapter.Span{End: id, EndNode: id} }
+
+// branchCmd grafts at sp — the whole turn n belongs to, not n's own
 // entry (§2.5b): n may be a prompt row with a reply still to come, and
 // grafting at the prompt would leave it unanswered for the resumed agent to
 // answer again. Callers widen n's turn first and pass its last entry.
-func branchCmd(a adapter.Adapter, st *store.Store, n *tree.Node, graftID, dst string) tea.Cmd {
+func branchCmd(a adapter.Adapter, st *store.Store, n *tree.Node, sp adapter.Span, dst string) tea.Cmd {
 	return func() tea.Msg {
-		sid, err := graftAndRecord(a, st, n, graftID, dst)
+		sid, err := graftAndRecord(a, st, n, sp, dst)
 		if err != nil {
 			return actionDoneMsg{status: err.Error()}
 		}
@@ -374,11 +379,11 @@ func branchCmd(a adapter.Adapter, st *store.Store, n *tree.Node, graftID, dst st
 
 // branchHereCmd is `b` (§2.5c): the same graft as branchCmd, but it opens
 // nothing and asks nothing. The reload lands the cursor on the new branch —
-// its tip, which for a branch with nothing of its own yet (graftID is the
+// its tip, which for a branch with nothing of its own yet (sp is the
 // turn under the cursor) is also its one rendered row (§5.3b).
-func branchHereCmd(a adapter.Adapter, st *store.Store, n *tree.Node, graftID, dst string) tea.Cmd {
+func branchHereCmd(a adapter.Adapter, st *store.Store, n *tree.Node, sp adapter.Span, dst string) tea.Cmd {
 	return func() tea.Msg {
-		sid, err := graftAndRecord(a, st, n, graftID, dst)
+		sid, err := graftAndRecord(a, st, n, sp, dst)
 		if err != nil {
 			return actionDoneMsg{status: err.Error()}
 		}
@@ -445,12 +450,12 @@ func scrubbed(err error, seed string) string {
 // A failed send does NOT fall back to grafting. The user asked to continue a
 // conversation; handing them a fork instead gives them two lines where they
 // expected one, and they will not notice until much later.
-// foldBackCmd appends at graftID when it grafts (branch here, §2.5b): the
+// foldBackCmd appends at sp when it grafts (branch here, §2.5b): the
 // whole turn at belongs to, not at's own entry, so the seed never lands
-// right after an unanswered prompt. The live-tip send path ignores graftID —
+// right after an unanswered prompt. The live-tip send path ignores sp —
 // it appends live, nothing is grafted — so callers on that path may pass
 // at.Node.ID unwidened.
-func foldBackCmd(a adapter.Adapter, st *store.Store, at *tree.Node, graftID, dst string, sum store.Summary, liveAgent string, send SendFunc) tea.Cmd {
+func foldBackCmd(a adapter.Adapter, st *store.Store, at *tree.Node, sp adapter.Span, dst string, sum store.Summary, liveAgent string, send SendFunc) tea.Cmd {
 	return func() tea.Msg {
 		sending := at.IsSessionLeaf && liveAgent != "" && send != nil
 		seed := foldBackSeed(at, sum, !sending)
@@ -461,12 +466,12 @@ func foldBackCmd(a adapter.Adapter, st *store.Store, at *tree.Node, graftID, dst
 			return actionDoneMsg{status: "sent to " + liveAgent, quit: true}
 		}
 		src := adapter.Session{ID: at.SessionID, CWD: at.SessionCWD, Path: at.SessionPath}
-		sid, err := a.BranchSeeded(src, graftID, dst, seed)
+		sid, err := a.BranchSeeded(src, sp.End, dst, seed)
 		if err != nil {
 			return actionDoneMsg{status: "branch failed: " + scrubbed(err, seed)}
 		}
 		st.Add(sid, store.Branch{
-			GraftedFrom: store.From{SessionID: at.SessionID, Node: graftID},
+			GraftedFrom: store.From{SessionID: at.SessionID, Node: sp.EndNode},
 			Title:       "⤶ " + title(sum.Text, 40),
 			CreatedAt:   time.Now().UTC(),
 		})
@@ -715,20 +720,19 @@ func (u uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if n == nil || n.Broken {
 				return u, nil
 			}
-			graftID := n.Node.ID
+			sp := entrySpan(n.Node.ID)
 			if !n.IsSessionLeaf {
 				// Graft after the WHOLE turn n is in (§2.5b), not at n's own
 				// entry: n may be an unanswered prompt row.
 				src := adapter.Session{ID: n.SessionID, CWD: n.SessionCWD, Path: n.SessionPath}
-				sp, err := u.a.Widen(src, n.Node.ID, n.Node.ID)
-				if err != nil {
+				var err error
+				if sp, err = u.a.Widen(src, n.Node.ID, n.Node.ID); err != nil {
 					u.status = "cannot branch from here: " + err.Error()
 					return u, nil
 				}
-				graftID = sp.End
 			}
 			u.busy = "branching…"
-			return u, branchHereCmd(u.a, u.st, n, graftID, u.dstCWD(n))
+			return u, branchHereCmd(u.a, u.st, n, sp, u.dstCWD(n))
 		case "enter":
 			if u.m.RangeEnd != nil {
 				return u.openRangeMenu()
@@ -756,7 +760,7 @@ func (u uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return u, nil
 			}
 			u.confirm = confirmText(n, turns, entries, size, u.dstCWD(n))
-			u.pending, u.pendingBusy = branchCmd(u.a, u.st, n, sp.End, u.dstCWD(n)), "branching…"
+			u.pending, u.pendingBusy = branchCmd(u.a, u.st, n, sp, u.dstCWD(n)), "branching…"
 		case "a":
 			u.scopeAll = !u.scopeAll
 			u.rebuild()

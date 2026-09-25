@@ -43,6 +43,9 @@ type world struct {
 	a     *recAdapter
 	h     *paneLog
 	clock time.Time
+	// durations ends every turn with the system turn_duration entry Claude
+	// Code writes after a reply: a real turn's last entry is not a row.
+	durations bool
 }
 
 // recAdapter is the real claude adapter with Resume recorded, since Resume
@@ -144,7 +147,13 @@ func (w *world) turnLines(sid, id, parent string) []map[string]any {
 	r := base("assistant", id+"-r", id+"-x")
 	r["requestId"] = "req-" + id + "-2"
 	r["message"] = map[string]any{"role": "assistant", "content": []any{map[string]any{"type": "text", "text": "reply " + id}}}
-	return []map[string]any{p, c, x, r}
+	if !w.durations {
+		return []map[string]any{p, c, x, r}
+	}
+	d := base("system", id+"-d", id+"-r")
+	d["subtype"] = "turn_duration"
+	d["durationMs"] = 1200
+	return []map[string]any{p, c, x, r, d}
 }
 
 func (w *world) appendLines(path string, lines []map[string]any) {
@@ -192,8 +201,9 @@ func (w *world) typeInto(sid string, ids ...string) {
 		}
 	}
 	for _, id := range ids {
-		w.appendLines(path, w.turnLines(sid, id, tip))
-		tip = id + "-r"
+		lines := w.turnLines(sid, id, tip)
+		w.appendLines(path, lines)
+		tip = lines[len(lines)-1]["uuid"].(string)
 	}
 }
 
@@ -1161,5 +1171,118 @@ func TestAMoveFromAReplacedLineIsRefused(t *testing.T) {
 	w.checkTranscripts(3)
 	if st, _ := store.Load(w.repo); st.Resolve(sidT) != r1 || len(st.Branches) != 2 {
 		t.Fatalf("store: T→%s, %d records", shortID(st.Resolve(sidT)), len(st.Branches))
+	}
+}
+
+// TestBMidLineShowsTheBranchAndGoesToIt is the reported bug: b on a mid-line
+// prompt, in a real-shaped transcript whose turns end with a turn_duration
+// entry, made a branch that was not on screen and left the cursor where it
+// was. The widened turn ends at that system entry, which is no row, so the
+// edge named an id tree.Build could not attach anything to.
+func TestBMidLineShowsTheBranchAndGoesToIt(t *testing.T) {
+	w := newWorld(t)
+	w.durations = true
+	w.trunk(sidT, "NUGGET", "TRIPPLEDIP", "BULLDOG", "HORSE")
+	u := w.open(sidT)
+	for i, r := range u.m.Rows() {
+		if r.Node.Node.ID == "TRIPPLEDIP-p" {
+			u.m.Cursor = i
+		}
+	}
+	u = drive(t, u, key('b'))
+	checkOneRowBranchUnder(t, w, u, "TRIPPLEDIP-p")
+}
+
+// checkOneRowBranchUnder: the one branch off sidT has exactly one row, its
+// copy of the graft point, one level under the head at, folded and
+// unfolded, and the cursor is on it.
+func checkOneRowBranchUnder(t *testing.T, w *world, u uiModel, at string) {
+	t.Helper()
+	st, err := store.Load(w.repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var branch string
+	for sid, b := range st.Branches {
+		if b.GraftedFrom.SessionID == sidT {
+			branch = sid
+		}
+	}
+	if branch == "" {
+		t.Fatalf("no branch recorded: %q", u.status)
+	}
+	if n := u.m.Selected(); n == nil || n.SessionID != branch {
+		t.Fatalf("cursor on %+v, want the new branch %s:\n%s", n, shortID(branch), strings.Join(screen(u), "\n"))
+	}
+	for _, folded := range []bool{true, false} {
+		if !folded {
+			unfold(u)
+		} else {
+			u.m = New(u.m.Roots)
+			u.m.SetTrunk(map[string]bool{sidT: true})
+		}
+		var head, mine []Row
+		for _, r := range u.m.Rows() {
+			if r.Node.SessionID == sidT && r.Node.Node.ID == at {
+				head = append(head, r)
+			}
+			if r.Node.SessionID == branch {
+				mine = append(mine, r)
+			}
+		}
+		if len(head) != 1 || len(mine) != 1 || mine[0].Depth != head[0].Depth+1 {
+			t.Fatalf("folded=%v: want one branch row one level under %s, got %+v under %+v", folded, at, mine, head)
+		}
+	}
+}
+
+// TestContinueMidLineShowsTheBranch is ⏎'s share of the same edge: continue
+// here on a mid-line prompt of real-shaped turns opens a branch that the next
+// overlay shows under the turn it came from.
+func TestContinueMidLineShowsTheBranch(t *testing.T) {
+	w := newWorld(t)
+	w.durations = true
+	w.trunk(sidT, "NUGGET", "TRIPPLEDIP", "BULLDOG", "HORSE")
+	b := w.branch(sidT, sidT, "TRIPPLEDIP-p")
+	u := w.open(sidT)
+	u.m.RevealTip(b)
+	checkOneRowBranchUnder(t, w, u, "TRIPPLEDIP-p")
+}
+
+// TestBranchHereMidLineShowsTheBranch is the third writer of the same edge:
+// squash into… a mid-line prompt of real-shaped turns, then branch here.
+func TestBranchHereMidLineShowsTheBranch(t *testing.T) {
+	w := newWorld(t)
+	w.durations = true
+	w.trunk(sidT, "NUGGET", "TRIPPLEDIP", "BULLDOG")
+	w.trunk(sidU, "u1", "u2")
+	u := selectRange(t, allOf(w.open(sidT)), sidU, "u1-p", "u1-r", 1)
+	u = drive(t, cursorTo(t, u, sidT, "TRIPPLEDIP-p"), enter)
+	if u.menu != "place" {
+		t.Fatalf("no place menu: %q", u.status)
+	}
+	u = drive(t, u, down, enter, enter) // branch here, confirm
+	st, _ := store.Load(w.repo)
+	var d string
+	for id, br := range st.Branches {
+		if br.GraftedFrom.SessionID == sidT {
+			d = id
+		}
+	}
+	if d == "" {
+		t.Fatalf("no branch recorded off T: %q", u.status)
+	}
+	rows := w.open(sidT).m.Rows() // folded, scoped to T
+	var head, mine []Row
+	for _, r := range rows {
+		if r.Node.SessionID == sidT && r.Node.Node.ID == "TRIPPLEDIP-p" {
+			head = append(head, r)
+		}
+		if r.Node.SessionID == d {
+			mine = append(mine, r)
+		}
+	}
+	if len(head) != 1 || len(mine) != 1 || mine[0].Depth != head[0].Depth+1 {
+		t.Fatalf("want the branch's seed one level under TRIPPLEDIP, got %+v under %+v", mine, head)
 	}
 }

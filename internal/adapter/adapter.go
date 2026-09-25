@@ -93,6 +93,10 @@ type Span struct {
 	First, Last int    // turn numbers; 0 is the preamble before the first prompt
 	End         string // the last entry of turn Last: where a summary stops reading
 	Turns       int    // the line's highest turn number
+	// EndNode is the last entry of turn Last that is a tree node. End is
+	// often not one (Claude Code ends a turn with a system entry), and an
+	// edge must name a node for tree.Build to hang the branch on it.
+	EndNode string
 }
 
 // Spliced is what a splice wrote.

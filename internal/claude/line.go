@@ -145,6 +145,23 @@ func (l *line) firstOf(t int) string {
 	return ""
 }
 
+// lastNodeOf is turn t's last entry that Entries makes a node of, in the
+// same file order Entries walks.
+func (l *line) lastNodeOf(t int) string {
+	hasOrigin := HasHumanOrigin(l.es)
+	out := ""
+	for _, e := range l.es {
+		u := e.UUID()
+		if tn, ok := l.turn[u]; !ok || tn != t || !l.keep[u] {
+			continue
+		}
+		if _, node := Classify(e, hasOrigin); node {
+			out = u
+		}
+	}
+	return out
+}
+
 func (l *line) lastOf(t int) string {
 	out := ""
 	for _, u := range l.chain {
