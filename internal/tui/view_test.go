@@ -482,16 +482,30 @@ func TestEnterOnBrokenRowDoesNothing(t *testing.T) {
 	}
 }
 
-func TestBKeyNoLongerBranches(t *testing.T) {
-	n := &tree.Node{Node: adapter.Node{ID: "n1", Title: "x"}, SessionID: "sid-a"}
-	u := uiModel{m: New([]*tree.Node{n}), a: &fakeAdapter{}}
+// TestBKeyGraftsAtTheWholeTurnLikeEnter is §2.5b/§2.5c: b, like ⏎, grafts
+// after a prompt row's WHOLE turn — its reply, not the prompt itself — so the
+// resumed line never inherits an unanswered prompt.
+func TestBKeyGraftsAtTheWholeTurnLikeEnter(t *testing.T) {
+	n := &tree.Node{Node: adapter.Node{ID: "prompt-id", Title: "a prompt with a reply"}, SessionID: "sid-a"}
+	fa := &fakeAdapter{span: adapter.Span{End: "reply-id"}}
+	u := uiModel{m: New([]*tree.Node{n}), a: fa, st: loadedStore(t)}
 
 	after, cmd := u.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'b'}})
-	if cmd != nil {
-		t.Fatal("b must no longer trigger any action")
+	if cmd == nil {
+		t.Fatal("b must branch without any confirmation")
 	}
-	if after.(uiModel).confirm != "" {
-		t.Fatal("b must no longer open the confirmation")
+	if got := after.(uiModel).confirm; got != "" {
+		t.Fatalf("b must ask nothing, got confirm %q", got)
+	}
+	msg := cmd().(actionDoneMsg)
+	if fa.branchedAt != "reply-id" {
+		t.Fatalf("want the graft at the turn's last entry %q, got %q", "reply-id", fa.branchedAt)
+	}
+	if fa.resumed != "" {
+		t.Fatalf("b must open nothing, resumed %q", fa.resumed)
+	}
+	if !msg.reload || msg.quit || msg.status != "branched new-sid — ⏎ on it to open it" {
+		t.Fatalf("%+v", msg)
 	}
 }
 

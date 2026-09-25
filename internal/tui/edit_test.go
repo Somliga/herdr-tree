@@ -890,3 +890,128 @@ func TestEnterOnATipAlreadyOpenInAPaneOpensNoSecondAgent(t *testing.T) {
 		t.Fatalf("status %q resumed %q", u.status, fa.resumed)
 	}
 }
+
+// TestBBranchesHereWithoutOpeningOrConfirming is §2.5c: b on a mid-line
+// prompt row grafts at the turn's last entry, straight off — no confirmation
+// — and reloads with the status naming the new branch.
+func TestBBranchesHereWithoutOpeningOrConfirming(t *testing.T) {
+	fa := &fakeAdapter{span: adapter.Span{End: "t2"}}
+	u := uiModel{m: New(session("s", "t1", "t2", "t3")), a: fa, st: loadedStore(t), repoRoot: "/repo"}
+	u.m.Cursor = 1 // t2, a mid-line prompt row, not the tip
+	u, cmd := press(t, u, key('b'))
+	if u.confirm != "" {
+		t.Fatalf("b must not confirm, got %q", u.confirm)
+	}
+	if cmd == nil {
+		t.Fatal("b must branch straight off")
+	}
+	msg := cmd().(actionDoneMsg)
+	if fa.branchedAt != "t2" {
+		t.Fatalf("want the graft at the turn's last entry %q, got %q", "t2", fa.branchedAt)
+	}
+	if fa.resumed != "" {
+		t.Fatalf("b must open nothing, resumed %q", fa.resumed)
+	}
+	if !msg.reload || msg.quit || msg.status != "branched new-sid — ⏎ on it to open it" {
+		t.Fatalf("%+v", msg)
+	}
+}
+
+// TestBOnATipMakesAOneRowBranch is §5.3b via the real files harness: a branch
+// grafted at a tip carries no turn of its own yet, so it renders as its one
+// copied row — the graft point — and nothing opens.
+func TestBOnATipMakesAOneRowBranch(t *testing.T) {
+	w := newWorld(t)
+	w.trunk(sidT, "t1", "t2")
+	u := allOf(w.open(sidT))
+	u = cursorTo(t, u, sidT, "t2-r") // the tip
+	u = drive(t, u, key('b'))
+	if u.confirm != "" || u.quitting {
+		t.Fatalf("b must ask nothing and open nothing: confirm %q quitting %v", u.confirm, u.quitting)
+	}
+	if len(w.h.calls) != 0 {
+		t.Fatalf("b opened something: %v", w.h.calls)
+	}
+	st, err := store.Load(w.repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var branch string
+	for sid, b := range st.Branches {
+		if b.GraftedFrom.SessionID == sidT {
+			branch = sid
+		}
+	}
+	if branch == "" {
+		t.Fatalf("no branch recorded off %s: %+v", shortID(sidT), st.Branches)
+	}
+	if !strings.Contains(u.status, "branched "+shortID(branch)+" — ⏎ on it to open it") {
+		t.Fatalf("status %q", u.status)
+	}
+	n := u.m.Selected()
+	if n == nil || n.SessionID != branch {
+		t.Fatalf("cursor on %+v, want the new branch", n)
+	}
+	unfold(u)
+	rows := 0
+	for _, r := range u.m.Rows() {
+		if r.Node.SessionID == branch {
+			rows++
+		}
+	}
+	if rows != 1 {
+		t.Fatalf("a branch with nothing of its own must keep exactly one row, got %d", rows)
+	}
+}
+
+// TestBIsSwallowedDuringARangeAMenuAConfirmationAndTargetMode is §2.5c: b
+// writes nothing while a range is being fixed, while a menu or confirmation
+// is on screen, or during squash into…'s target mode.
+func TestBIsSwallowedDuringARangeAMenuAConfirmationAndTargetMode(t *testing.T) {
+	fa := &fakeAdapter{span: adapter.Span{First: 2, Last: 3, Turns: 3}}
+
+	// Mid-range (s fixed the end, cursor not yet moved to a start).
+	u := rangeUI(t, fa, &herdrLog{})
+	u, cmd := press(t, u, key('b'))
+	if cmd != nil || len(fa.writes) != 0 {
+		t.Fatalf("b acted mid-range: writes %v", fa.writes)
+	}
+
+	// The range menu.
+	u, cmd = press(t, u, enter)
+	if u.menu != "range" {
+		t.Fatalf("setup: no range menu: %q", u.status)
+	}
+	u, cmd = press(t, u, key('b'))
+	if cmd != nil || len(fa.writes) != 0 {
+		t.Fatalf("b acted on the range menu: writes %v", fa.writes)
+	}
+
+	// A confirmation (⏎ on a mid-line row raises one).
+	fa2 := &fakeAdapter{span: adapter.Span{End: "t2"}}
+	u2 := uiModel{m: New(session("s", "t1", "t2", "t3")), a: fa2, st: loadedStore(t), repoRoot: "/repo"}
+	u2.m.Cursor = 0
+	u2, _ = press(t, u2, enter)
+	if u2.confirm == "" {
+		t.Fatal("setup: no confirmation")
+	}
+	u2, cmd = press(t, u2, key('b'))
+	if cmd != nil || u2.confirm == "" {
+		t.Fatal("b acted on a confirmation")
+	}
+
+	// Target mode.
+	u3 := moveUI(t, &fakeAdapter{}, &herdrLog{})
+	u3, cmd = press(t, u3, key('b'))
+	if cmd != nil || u3.folding == nil {
+		t.Fatal("b acted in target mode")
+	}
+}
+
+func TestFooterNamesContinueAndBranch(t *testing.T) {
+	u := uiModel{m: New(session("s", "t1")), st: loadedStore(t)}
+	v := u.View()
+	if !strings.Contains(v, "⏎ continue here") || !strings.Contains(v, "b branch") {
+		t.Fatalf("footer missing ⏎/b wording:\n%s", v)
+	}
+}

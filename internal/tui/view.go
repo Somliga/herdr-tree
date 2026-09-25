@@ -331,33 +331,58 @@ func resumeCmd(a adapter.Adapter, n *tree.Node, dst string) tea.Cmd {
 	}
 }
 
+// graftAndRecord grafts n's session at graftID into dst, records the new
+// branch's edge and saves the store — the part branchCmd (⏎, which then opens
+// the result) and branchHereCmd (b, which does not, §2.5c) share. graftID is
+// stored, not n.Node.ID: it must be the id the branch file actually copied up
+// to, so tree.Build's attachPoint counts the right number of copies. The edge
+// is recorded before either caller does anything else: the transcript now
+// exists, so the branch must survive even if what follows fails.
+func graftAndRecord(a adapter.Adapter, st *store.Store, n *tree.Node, graftID, dst string) (sid string, err error) {
+	src := adapter.Session{ID: n.SessionID, CWD: n.SessionCWD, Path: n.SessionPath}
+	sid, err = a.Branch(src, graftID, dst)
+	if err != nil {
+		return "", fmt.Errorf("branch failed: %w", err)
+	}
+	st.Add(sid, store.Branch{
+		GraftedFrom: store.From{SessionID: n.SessionID, Node: graftID},
+		Title:       n.Node.Title,
+		CreatedAt:   time.Now().UTC(),
+	})
+	if err := st.Save(); err != nil {
+		return sid, fmt.Errorf("branched %s, but the tree was not saved: %w", shortID(sid), err)
+	}
+	return sid, nil
+}
+
 // branchCmd grafts at graftID — the whole turn n belongs to, not n's own
 // entry (§2.5b): n may be a prompt row with a reply still to come, and
 // grafting at the prompt would leave it unanswered for the resumed agent to
 // answer again. Callers widen n's turn first and pass its last entry.
 func branchCmd(a adapter.Adapter, st *store.Store, n *tree.Node, graftID, dst string) tea.Cmd {
 	return func() tea.Msg {
-		src := adapter.Session{ID: n.SessionID, CWD: n.SessionCWD, Path: n.SessionPath}
-		sid, err := a.Branch(src, graftID, dst)
+		sid, err := graftAndRecord(a, st, n, graftID, dst)
 		if err != nil {
-			return actionDoneMsg{status: "branch failed: " + err.Error()}
-		}
-		// Record the edge before resuming: the transcript now exists, so the
-		// branch must survive even if opening it fails. graftID is stored,
-		// not n.Node.ID: it must be the id the branch file actually copied up
-		// to, so tree.Build's attachPoint counts the right number of copies.
-		st.Add(sid, store.Branch{
-			GraftedFrom: store.From{SessionID: n.SessionID, Node: graftID},
-			Title:       n.Node.Title,
-			CreatedAt:   time.Now().UTC(),
-		})
-		if err := st.Save(); err != nil {
-			return actionDoneMsg{status: "branched " + shortID(sid) + ", but the tree was not saved: " + err.Error()}
+			return actionDoneMsg{status: err.Error()}
 		}
 		if err := a.Resume(sid, dst, false); err != nil {
 			return actionDoneMsg{status: "branched " + shortID(sid) + ", but it did not open: " + err.Error()}
 		}
 		return actionDoneMsg{status: "branched " + shortID(sid), quit: true}
+	}
+}
+
+// branchHereCmd is `b` (§2.5c): the same graft as branchCmd, but it opens
+// nothing and asks nothing. The reload lands the cursor on the new branch —
+// its tip, which for a branch with nothing of its own yet (graftID is the
+// turn under the cursor) is also its one rendered row (§5.3b).
+func branchHereCmd(a adapter.Adapter, st *store.Store, n *tree.Node, graftID, dst string) tea.Cmd {
+	return func() tea.Msg {
+		sid, err := graftAndRecord(a, st, n, graftID, dst)
+		if err != nil {
+			return actionDoneMsg{status: err.Error()}
+		}
+		return actionDoneMsg{status: "branched " + shortID(sid) + " — ⏎ on it to open it", reload: true, tip: sid}
 	}
 }
 
@@ -628,7 +653,7 @@ func (u uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return u.placeInFoldMode(n)
 			case "esc":
 				return u.cancelMove(), nil
-			case "s", "p":
+			case "s", "p", "b":
 				return u, nil
 			}
 		}
@@ -680,6 +705,30 @@ func (u uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return u, nil
 			}
 			u.picking, u.pickIdx, u.pickAt = sums, 0, n
+		case "b":
+			// Swallowed mid-range: s/⏎ already own the keys while a range is
+			// being fixed (§2.5c).
+			if u.m.RangeEnd != nil {
+				return u, nil
+			}
+			n := u.m.Selected()
+			if n == nil || n.Broken {
+				return u, nil
+			}
+			graftID := n.Node.ID
+			if !n.IsSessionLeaf {
+				// Graft after the WHOLE turn n is in (§2.5b), not at n's own
+				// entry: n may be an unanswered prompt row.
+				src := adapter.Session{ID: n.SessionID, CWD: n.SessionCWD, Path: n.SessionPath}
+				sp, err := u.a.Widen(src, n.Node.ID, n.Node.ID)
+				if err != nil {
+					u.status = "cannot branch from here: " + err.Error()
+					return u, nil
+				}
+				graftID = sp.End
+			}
+			u.busy = "branching…"
+			return u, branchHereCmd(u.a, u.st, n, graftID, u.dstCWD(n))
 		case "enter":
 			if u.m.RangeEnd != nil {
 				return u.openRangeMenu()
@@ -817,7 +866,7 @@ func (u uiModel) View() string {
 		// so is cheaper than the user discovering that esc no longer closes.
 		b.WriteString("↑↓ move to the range's start  s/⏎ choose what to do  esc cancel range\n")
 	} else {
-		b.WriteString(fmt.Sprintf("↑↓ move  ←→ fold  ⏎ continue  s select  p place a summary  L label  a scope:%s  f filter:%s  esc close\n", scope, u.m.Filter))
+		b.WriteString(fmt.Sprintf("↑↓ move  ←→ fold  ⏎ continue here  b branch  s select  p place a summary  L label  a scope:%s  f filter:%s  esc close\n", scope, u.m.Filter))
 	}
 	if u.busy != "" {
 		b.WriteString(u.busy + "\n")
